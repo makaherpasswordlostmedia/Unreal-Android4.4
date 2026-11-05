@@ -1736,10 +1736,19 @@ jobs:
           set(CMAKE_OBJC_FLAGS_INIT   "${_common}")
           set(CMAKE_OBJCXX_FLAGS_INIT "${_common} -stdlib=libc++")
           set(CMAKE_EXE_LINKER_FLAGS_INIT "-arch armv7 -miphoneos-version-min=7.0 -isysroot ${IOS_SDK} ${_ld}")
+          # Platform/Darwin.cmake forces libtool for static libs (absent on Linux) and overwrites anything set here,
+          # which made EVERY try_compile (check_function_exists, pthreads, ...) fail. A rules override is loaded after
+          # the platform module and is propagated into try_compile projects, so use plain ar+ranlib there.
+          set(CMAKE_USER_MAKE_RULES_OVERRIDE ${CMAKE_CURRENT_LIST_DIR}/ios-rules-override.cmake)
           set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
           set(CMAKE_FIND_ROOT_PATH ${IOS_SDK})
           set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
           EOF_TC
+          cat > ios/cmake/ios-rules-override.cmake <<'EOF_OV'
+          foreach(L C CXX OBJC OBJCXX)
+            set(CMAKE_${L}_CREATE_STATIC_LIBRARY "<CMAKE_AR> qc <TARGET> <LINK_FLAGS> <OBJECTS>" "<CMAKE_RANLIB> <TARGET>")
+          endforeach()
+          EOF_OV
           cat > CMakeLists.txt <<'EOF_CM'
           cmake_minimum_required(VERSION 3.20)
           project(UnrealiOS C CXX OBJC OBJCXX)
@@ -1857,9 +1866,16 @@ jobs:
           find "$SDK/usr/include" -name module.map | while read -r m; do mv "$m" "$(dirname "$m")/module.modulemap"; done
           echo "THEOS=$THEOS" >> "$GITHUB_ENV"
       - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE=ios/cmake/ios-armv7-toolchain.cmake 2>&1 | tee build-configure.log
+        run: |
+          set -o pipefail
+          cmake -S . -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE=ios/cmake/ios-armv7-toolchain.cmake 2>&1 | tee build-configure.log || {
+            echo "::group::CMakeError.log"; tail -n 120 build/CMakeFiles/CMakeError.log || true; echo "::endgroup::"
+            cp build/CMakeFiles/CMakeError.log build-cmakeerror.log 2>/dev/null || true
+            exit 1; }
       - name: Build
-        run: cmake --build build -j"$(nproc)" 2>&1 | tee build-make.log
+        run: |
+          set -o pipefail
+          cmake --build build -j"$(nproc)" 2>&1 | tee build-make.log
       - name: Verify Mach-O
         run: |
           file build/UnrealiOS || true
