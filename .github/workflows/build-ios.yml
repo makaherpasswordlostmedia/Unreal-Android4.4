@@ -16,10 +16,11 @@ jobs:
           # Needs: L1ghtmann LLVM iOS toolchain (Theos) + iPhoneOS 9.3 SDK.
           #   IOS_TOOLCHAIN_BIN  = <theos>/toolchain/linux/iphone/bin   (or set THEOS)
           #   IOS_SDK            = <theos>/sdks/iPhoneOS9.3.sdk          (or set THEOS)
-          set(CMAKE_SYSTEM_NAME iOS)
+          # CMake's own iOS platform module needs an Apple SDK name (fails on Linux): use Darwin and flag IOS ourselves.
+          set(CMAKE_SYSTEM_NAME Darwin)
+          set(IOS TRUE)
           set(CMAKE_SYSTEM_PROCESSOR armv7)
           set(CMAKE_OSX_ARCHITECTURES armv7 CACHE STRING "" FORCE)
-          set(CMAKE_OSX_DEPLOYMENT_TARGET 7.0 CACHE STRING "" FORCE)
 
           if(NOT IOS_TOOLCHAIN_BIN)
             if(DEFINED ENV{IOS_TOOLCHAIN_BIN})
@@ -40,6 +41,7 @@ jobs:
           endif()
 
           set(CMAKE_SYSROOT ${IOS_SDK})
+          set(CMAKE_OSX_SYSROOT ${IOS_SDK} CACHE PATH "" FORCE)
           set(CMAKE_C_COMPILER   ${IOS_TOOLCHAIN_BIN}/clang)
           set(CMAKE_CXX_COMPILER ${IOS_TOOLCHAIN_BIN}/clang++)
           set(CMAKE_OBJC_COMPILER   ${IOS_TOOLCHAIN_BIN}/clang)
@@ -202,4 +204,3 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with: { name: build-logs, path: "build-*.log", if-no-files-found: ignore }
-        
