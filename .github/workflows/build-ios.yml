@@ -1717,10 +1717,10 @@ jobs:
             set(CMAKE_${L}_COMPILER_WORKS TRUE)
             set(CMAKE_${L}_COMPILER_TARGET armv7-apple-ios7.0)
           endforeach()
-          find_program(IOS_AR     NAMES ar llvm-ar         HINTS ${IOS_TOOLCHAIN_BIN} NO_DEFAULT_PATH)
-          find_program(IOS_RANLIB NAMES ranlib llvm-ranlib HINTS ${IOS_TOOLCHAIN_BIN} NO_DEFAULT_PATH)
-          find_program(IOS_AR     NAMES ar llvm-ar)
-          find_program(IOS_RANLIB NAMES ranlib llvm-ranlib)
+          find_program(IOS_AR     NAMES llvm-ar ar         HINTS ${IOS_TOOLCHAIN_BIN} NO_DEFAULT_PATH)
+          find_program(IOS_RANLIB NAMES llvm-ranlib ranlib HINTS ${IOS_TOOLCHAIN_BIN} NO_DEFAULT_PATH)
+          find_program(IOS_AR     NAMES llvm-ar ar)
+          find_program(IOS_RANLIB NAMES llvm-ranlib ranlib)
           set(CMAKE_AR ${IOS_AR} CACHE FILEPATH "" FORCE)
           set(CMAKE_RANLIB ${IOS_RANLIB} CACHE FILEPATH "" FORCE)
 
@@ -1864,6 +1864,12 @@ jobs:
             [ -f "$fw/module.map" ] && { mkdir -p "$fw/Modules"; mv "$fw/module.map" "$fw/Modules/module.modulemap"; }
           done
           find "$SDK/usr/include" -name module.map | while read -r m; do mv "$m" "$(dirname "$m")/module.modulemap"; done
+          # toolchain's ar/ranlib wrappers call a missing aarch64-apple-darwin14-ranlib -> make it exist
+          TB="$THEOS/toolchain/linux/iphone/bin"
+          for t in ranlib; do
+            [ -e "$TB/aarch64-apple-darwin14-$t" ] || ln -sf "$TB/llvm-$t" "$TB/aarch64-apple-darwin14-$t" 2>/dev/null || true
+          done
+          ls "$TB" | grep -E 'llvm-(ar|ranlib)$|ranlib' || true
           echo "THEOS=$THEOS" >> "$GITHUB_ENV"
       - name: Toolchain sanity (shows the real compiler error)
         run: |
@@ -1871,7 +1877,7 @@ jobs:
           ls "$B" | head -50; ls "$SDK" | head
           printf '#include <fcntl.h>\n#include <pthread.h>\n#include <math.h>\nint main(void){pthread_attr_t t;pthread_attr_init(&t);return (int)tan(1.0)+O_CLOEXEC;}\n' > /tmp/t.c
           echo "== compile (cmake-style flags)"; "$B/clang" --target=armv7-apple-ios7.0 -arch armv7 -miphoneos-version-min=7.0 -isysroot "$SDK" -fno-modules -c /tmp/t.c -o /tmp/t.o -v || true
-          echo "== archive"; "$B/ar" qc /tmp/t.a /tmp/t.o || ar qc /tmp/t.a /tmp/t.o || true
+          echo "== archive"; "$B/llvm-ar" qc /tmp/t.a /tmp/t.o && echo archive-ok || true
           ls -la /tmp/t.o /tmp/t.a || true
       - name: Configure
         run: |
