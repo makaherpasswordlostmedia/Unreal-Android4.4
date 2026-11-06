@@ -1772,6 +1772,8 @@ jobs:
           set(SDL_AUDIO  OFF CACHE BOOL "" FORCE)
           set(SDL_HAPTIC OFF CACHE BOOL "" FORCE)
           set(SDL_HIDAPI OFF CACHE BOOL "" FORCE)
+          # iPhoneOS 9.3 SDK has no GCMicroGamepad etc. -> MFi joystick can't build; SDL falls back to its dummy joystick driver
+          set(SDL_JOYSTICK OFF CACHE BOOL "" FORCE)
           set(SDL_OPENGLES ON CACHE BOOL "" FORCE)
           add_subdirectory(third_party/SDL2 EXCLUDE_FROM_ALL)
 
@@ -1847,6 +1849,9 @@ jobs:
           EOF_PK
           chmod +x ios/scripts/package_ios.sh
           # ---- put extra source fixes (sed/patch) below ----
+          # iOS 9.3 SDK lacks openURL:options:completionHandler: (iOS 10+); use the old API
+          sed -i 's|openURL:nsurl options:@{} completionHandler:^(BOOL success) {}|openURL:nsurl|' third_party/SDL2/src/misc/ios/SDL_sysurl.m
+          ! grep -q completionHandler third_party/SDL2/src/misc/ios/SDL_sysurl.m
       - name: Host tools
         run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build curl zip unzip xz-utils bzip2 git
       - name: Theos + toolchain + SDK
