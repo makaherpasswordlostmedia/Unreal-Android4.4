@@ -1864,6 +1864,9 @@ jobs:
           grep -q 'MAX_ALLOWED >= 150000' third_party/SDL2/src/video/uikit/SDL_uikitviewcontroller.m
           # Apple's <unistd.h> already typedefs uuid_t (unsigned char[16]) -> rename UnGUID.cpp's private copy
           sed -i -E 's/\buuid_t\b/ue_uuid_t/g; s/\buuid_create\b/ue_uuid_create/g; s/\buuid_init\b/ue_uuid_init/g' engine/Source/Core/Src/UnGUID.cpp
+          # SDL treats CMAKE_SYSTEM_NAME=Darwin as macOS and links Cocoa/Carbon; we are iOS
+          sed -i 's/^  if(MACOS)$/  if(MACOS AND NOT IOS)/' third_party/SDL2/CMakeLists.txt
+          grep -q 'if(MACOS AND NOT IOS)' third_party/SDL2/CMakeLists.txt
           # iOS patch payload skips linking Engine/Core into the Unreal launcher lib -> Engine.h include dir is missing. Add it.
           cat >> engine/Source/Unreal/CMakeLists.txt <<'EOF_UN'
 
