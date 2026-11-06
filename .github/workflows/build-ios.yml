@@ -1852,6 +1852,11 @@ jobs:
           # iOS 9.3 SDK lacks openURL:options:completionHandler: (iOS 10+); use the old API
           sed -i 's|openURL:nsurl options:@{} completionHandler:^(BOOL success) {}|openURL:nsurl|' third_party/SDL2/src/misc/ios/SDL_sysurl.m
           ! grep -q completionHandler third_party/SDL2/src/misc/ios/SDL_sysurl.m
+          # AvailabilityVersions.h is not in the 9.3 SDK (the file already #defines __IPHONE_13_0 as fallback)
+          sed -i '/#include <AvailabilityVersions.h>/d' third_party/SDL2/src/video/uikit/SDL_uikitappdelegate.m
+          # iOS 15 high-refresh-rate API (CAFrameRateRange) doesn't exist in 9.3 SDK
+          perl -0pi -e 's/(        if \(\@available\(iOS 15\.0, tvOS 15\.0, \*\)\) \{.*?\n        \}\n)/#if __IPHONE_OS_VERSION_MAX_ALLOWED >= 150000\n$1#endif\n/s' third_party/SDL2/src/video/uikit/SDL_uikitviewcontroller.m
+          grep -q 'MAX_ALLOWED >= 150000' third_party/SDL2/src/video/uikit/SDL_uikitviewcontroller.m
       - name: Host tools
         run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build curl zip unzip xz-utils bzip2 git
       - name: Theos + toolchain + SDK
