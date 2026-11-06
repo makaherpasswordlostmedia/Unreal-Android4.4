@@ -1862,6 +1862,8 @@ jobs:
           # iOS 15 high-refresh-rate API (CAFrameRateRange) doesn't exist in 9.3 SDK
           perl -0pi -e 's/(        if \(\@available\(iOS 15\.0, tvOS 15\.0, \*\)\) \{.*?\n        \}\n)/#if __IPHONE_OS_VERSION_MAX_ALLOWED >= 150000\n$1#endif\n/s' third_party/SDL2/src/video/uikit/SDL_uikitviewcontroller.m
           grep -q 'MAX_ALLOWED >= 150000' third_party/SDL2/src/video/uikit/SDL_uikitviewcontroller.m
+          # Apple's <unistd.h> already typedefs uuid_t (unsigned char[16]) -> rename UnGUID.cpp's private copy
+          sed -i -E 's/\buuid_t\b/ue_uuid_t/g; s/\buuid_create\b/ue_uuid_create/g; s/\buuid_init\b/ue_uuid_init/g' engine/Source/Core/Src/UnGUID.cpp
           # iOS 11 view-controller selectors aren't declared in the 9.3 SDK: call them dynamically (already guarded by respondsToSelector)
           sed -i 's|\[viewcontroller setNeedsUpdateOfHomeIndicatorAutoHidden\];|[viewcontroller performSelector:@selector(setNeedsUpdateOfHomeIndicatorAutoHidden)];|; s|\[viewcontroller setNeedsUpdateOfScreenEdgesDeferringSystemGestures\];|[viewcontroller performSelector:@selector(setNeedsUpdateOfScreenEdgesDeferringSystemGestures)];|' third_party/SDL2/src/video/uikit/SDL_uikitviewcontroller.m
           ! grep -q '\[viewcontroller setNeedsUpdateOf' third_party/SDL2/src/video/uikit/SDL_uikitviewcontroller.m
