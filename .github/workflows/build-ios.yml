@@ -1732,9 +1732,14 @@ jobs:
           # 9.3 SDK module maps confuse modern clang.
           set(_common "-arch armv7 -miphoneos-version-min=7.0 -isysroot ${IOS_SDK} -fno-modules -fno-implicit-modules -fno-implicit-module-maps -Wno-deprecated-declarations -Wno-error")
           set(CMAKE_C_FLAGS_INIT   "${_common}")
-          set(CMAKE_CXX_FLAGS_INIT "${_common} -stdlib=libc++")
+          # Toolchain's libc++ 19 headers lack __config_site; use the SDK's own libc++ headers (match the SDK's libc++.dylib).
+          set(_cxxinc "")
+          if(EXISTS ${IOS_SDK}/usr/include/c++/v1)
+            set(_cxxinc "-nostdinc++ -isystem ${IOS_SDK}/usr/include/c++/v1")
+          endif()
+          set(CMAKE_CXX_FLAGS_INIT "${_common} -stdlib=libc++ ${_cxxinc}")
           set(CMAKE_OBJC_FLAGS_INIT   "${_common}")
-          set(CMAKE_OBJCXX_FLAGS_INIT "${_common} -stdlib=libc++")
+          set(CMAKE_OBJCXX_FLAGS_INIT "${_common} -stdlib=libc++ ${_cxxinc}")
           set(CMAKE_EXE_LINKER_FLAGS_INIT "-arch armv7 -miphoneos-version-min=7.0 -isysroot ${IOS_SDK} ${_ld}")
           # Platform/Darwin.cmake forces libtool for static libs (absent on Linux) and overwrites anything set here,
           # which made EVERY try_compile (check_function_exists, pthreads, ...) fail. A rules override is loaded after
@@ -1883,6 +1888,17 @@ jobs:
             [ -e "$TB/aarch64-apple-darwin14-$t" ] || ln -sf "$TB/llvm-$t" "$TB/aarch64-apple-darwin14-$t" 2>/dev/null || true
           done
           ls "$TB" | grep -E 'llvm-(ar|ranlib)$|ranlib' || true
+          if [ -d "$SDK/usr/include/c++/v1" ]; then echo "SDK libc++ headers: ok"; else
+            echo "SDK has no libc++ headers; writing minimal __config_site into toolchain"
+            cat > "$TB/../include/c++/v1/__config_site" <<'EOF_CS'
+          #ifndef _LIBCPP_CONFIG_SITE
+          #define _LIBCPP_CONFIG_SITE
+          #define _LIBCPP_ABI_VERSION 1
+          #define _LIBCPP_ABI_NAMESPACE __1
+          #define _LIBCPP_HAS_THREAD_API_PTHREAD 1
+          #endif
+          EOF_CS
+          fi
           echo "THEOS=$THEOS" >> "$GITHUB_ENV"
       - name: Toolchain sanity (shows the real compiler error)
         run: |
