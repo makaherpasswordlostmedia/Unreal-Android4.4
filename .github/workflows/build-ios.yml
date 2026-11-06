@@ -1888,16 +1888,26 @@ jobs:
             [ -e "$TB/aarch64-apple-darwin14-$t" ] || ln -sf "$TB/llvm-$t" "$TB/aarch64-apple-darwin14-$t" 2>/dev/null || true
           done
           ls "$TB" | grep -E 'llvm-(ar|ranlib)$|ranlib' || true
-          if [ -d "$SDK/usr/include/c++/v1" ]; then echo "SDK libc++ headers: ok"; else
-            echo "SDK has no libc++ headers; writing minimal __config_site into toolchain"
-            cat > "$TB/../include/c++/v1/__config_site" <<'EOF_CS'
+          echo "== libc++ discovery"
+          find "$SDK/usr/include" -maxdepth 2 -iname '*c++*' 2>/dev/null | head
+          find "$THEOS/toolchain" -name '__config_site' 2>/dev/null | head
+          CS="$TB/../include/c++/v1/__config_site"
+          if [ -d "$SDK/usr/include/c++/v1" ]; then echo "SDK libc++ headers: ok"
+          elif [ ! -f "$CS" ]; then
+            FOUND="$(find "$THEOS/toolchain" -name '__config_site' 2>/dev/null | head -n1)"
+            if [ -n "$FOUND" ]; then cp "$FOUND" "$CS"; else
+              echo "no __config_site anywhere; writing one (libc++ 19, Apple, pthread)"
+              cat > "$CS" <<'EOF_CS'
           #ifndef _LIBCPP_CONFIG_SITE
           #define _LIBCPP_CONFIG_SITE
           #define _LIBCPP_ABI_VERSION 1
           #define _LIBCPP_ABI_NAMESPACE __1
           #define _LIBCPP_HAS_THREAD_API_PTHREAD 1
+          #define _LIBCPP_HARDENING_MODE_DEFAULT _LIBCPP_HARDENING_MODE_NONE
+          #define _LIBCPP_PSTL_BACKEND_SERIAL 1
           #endif
           EOF_CS
+            fi
           fi
           echo "THEOS=$THEOS" >> "$GITHUB_ENV"
       - name: Toolchain sanity (shows the real compiler error)
