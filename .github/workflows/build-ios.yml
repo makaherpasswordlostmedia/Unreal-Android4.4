@@ -2211,6 +2211,407 @@ jobs:
               sys.exit("expected 4 x %s in NOpenGLESDrv.cpp, found %d" % (needle, src.count(needle)))
           open(path, 'w', encoding='utf-8', newline='').write(src.replace(needle, 'glBindFramebuffer( GL_FRAMEBUFFER, UE1GLESDefaultFBO )'))
 
+          # ---------------- iPad 1 / iOS 7: SDL reports the GL surface as 768x1024 (portrait) while the game renders
+          # 1024x768 -> viewport/blit use the wrong size and the picture fills only part of the screen. Ask GL for the
+          # real size of the on-screen renderbuffer once, and make every SDL_GL_GetDrawableSize() in this file return it.
+          edit('engine/Source/NOpenGLESDrv/NOpenGLESDrv.cpp', [
+           ('#ifdef PLATFORM_IOS\nstatic GLuint UE1GLESDefaultFBO = 0;',
+            '#ifdef PLATFORM_IOS\n'
+            'static GLint UE1IOSRealW = 0, UE1IOSRealH = 0; // true size of the on-screen renderbuffer\n'
+            'static int UE1IOSGetDrawable( SDL_Window* W, int* OutW, int* OutH )\n'
+            '{\n'
+            '\tif( UE1IOSRealW > 0 && UE1IOSRealH > 0 ) { *OutW = UE1IOSRealW; *OutH = UE1IOSRealH; return 0; }\n'
+            '\treturn SDL_GL_GetDrawableSize( W, OutW, OutH ), 0;\n'
+            '}\n'
+            '#define SDL_GL_GetDrawableSize UE1IOSGetDrawable\n'
+            'static GLuint UE1GLESDefaultFBO = 0;'),
+           ('\t\tdebugf( NAME_Log, "GLES: iOS default framebuffer = %u", (unsigned)UE1GLESDefaultFBO );\n',
+            '\t\tdebugf( NAME_Log, "GLES: iOS default framebuffer = %u", (unsigned)UE1GLESDefaultFBO );\n'
+            '\t\t{\n'
+            '\t\t\tGLint Rb = 0, PrevRb = 0, RW = 0, RH = 0;\n'
+            '\t\t\tglGetFramebufferAttachmentParameteriv( GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &Rb );\n'
+            '\t\t\tif( Rb )\n'
+            '\t\t\t{\n'
+            '\t\t\t\tglGetIntegerv( GL_RENDERBUFFER_BINDING, &PrevRb );\n'
+            '\t\t\t\tglBindRenderbuffer( GL_RENDERBUFFER, (GLuint)Rb );\n'
+            '\t\t\t\tglGetRenderbufferParameteriv( GL_RENDERBUFFER, GL_RENDERBUFFER_WIDTH, &RW );\n'
+            '\t\t\t\tglGetRenderbufferParameteriv( GL_RENDERBUFFER, GL_RENDERBUFFER_HEIGHT, &RH );\n'
+            '\t\t\t\tglBindRenderbuffer( GL_RENDERBUFFER, (GLuint)PrevRb );\n'
+            '\t\t\t}\n'
+            '\t\t\tif( RW > 0 && RH > 0 ) { UE1IOSRealW = RW; UE1IOSRealH = RH; }\n'
+            '\t\t\tdebugf( NAME_Log, "GLES: iOS real renderbuffer = %ix%i", (int)RW, (int)RH );\n'
+            '\t\t}\n'),
+          ])
+
+          # ---------------- touch controls v2: bigger buttons with press feedback + stick hint; the pad stays on screen in menus
+          # (only a MENU/CLOSE button is active there, every other touch goes through to SDL's touch->mouse for the menu).
+          host_path = 'ios/host/UE1IOSHost.mm'
+          host_src = open(host_path, encoding='utf-8', newline='').read()
+          pad_marker = 'enum { PAD_BTN_FIRE'
+          if host_src.count(pad_marker) != 1:
+              sys.exit('pad marker not found exactly once')
+          PAD_V2 = r'''
+          enum { PAD_BTN_FIRE, PAD_BTN_ALT, PAD_BTN_JUMP, PAD_BTN_DUCK, PAD_BTN_NEXT, PAD_BTN_PREV, PAD_BTN_COUNT };
+
+          // Layout is designed in points for a 768pt-tall screen (iPad 1024x768) and scaled by PadScale().
+          // Everything hangs off the bottom-right corner so it sits under the right thumb (an arc around FIRE).
+          struct PadBtnDef { const char* Label; CGFloat FromRight, FromBottom, Radius; };
+          static const PadBtnDef kBtn[PAD_BTN_COUNT] =
+          {
+          	{ "FIRE", 125, 125, 64 },
+          	{ "ALT",  268,  80, 44 },
+          	{ "JUMP",  96, 272, 48 },
+          	{ "DUCK", 252, 214, 40 },
+          	{ "NEXT",  62, 410, 36 },
+          	{ "PREV",  62, 496, 36 },
+          };
+
+          static const CGFloat kBtnIdleAlpha = 0.26;
+          static const CGFloat kBtnDownAlpha = 0.60;
+
+          static CGFloat PadScale( CGSize S )
+          {
+          	CGFloat K = S.height / 768.0;
+          	if( K < 0.75 ) K = 0.75;
+          	if( K > 1.5 ) K = 1.5;
+          	return K * GCtlScale;
+          }
+
+          static void ApplyButton( int Idx, bool Down )
+          {
+          	switch( Idx )
+          	{
+          		case PAD_BTN_FIRE: PushAxis( SDL_CONTROLLER_AXIS_TRIGGERRIGHT, Down ? 32767 : 0 ); break;
+          		case PAD_BTN_ALT:  PushAxis( SDL_CONTROLLER_AXIS_TRIGGERLEFT,  Down ? 32767 : 0 ); break;
+          		case PAD_BTN_JUMP: PushButton( SDL_CONTROLLER_BUTTON_A, Down ); break;
+          		case PAD_BTN_DUCK: PushButton( SDL_CONTROLLER_BUTTON_B, Down ); break;
+          		case PAD_BTN_NEXT: PushButton( SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, Down ); break;
+          		case PAD_BTN_PREV: PushButton( SDL_CONTROLLER_BUTTON_LEFTSHOULDER,  Down ); break;
+          	}
+          }
+
+          @interface UE1PadTouch : NSObject
+          { @public int Role; int Btn; CGPoint Origin; }
+          @end
+          @implementation UE1PadTouch
+          @end
+
+          // MOVE = floating left stick, LOOK = drag anywhere on the right half (relative, like a mouse),
+          // BUTTON = on-screen button (FIRE also lets the same finger keep aiming), MENU = top-centre button.
+          enum { ROLE_NONE, ROLE_MOVE, ROLE_LOOK, ROLE_BUTTON, ROLE_MENU };
+
+          @interface UE1PadView : UIView
+          {
+          	NSMutableDictionary* Touches;
+          	UIView* BtnViews[PAD_BTN_COUNT];
+          	UIView* MenuView;
+          	UILabel* MenuLabel;
+          	UIView* StickBase;
+          	UIView* StickKnob;
+          	UIView* StickHint;
+          	CGFloat Scale;
+          	BOOL MenuMode;
+          }
+          - (void)releaseAll;
+          - (void)setMenuMode:(BOOL)InMenu;
+          @end
+
+          @implementation UE1PadView
+
+          static UIView* MakeCircle( CGFloat R, CGFloat Alpha )
+          {
+          	UIView* V = [[UIView alloc] initWithFrame:CGRectMake( 0, 0, R * 2, R * 2 )];
+          	V.backgroundColor = [UIColor colorWithWhite:1.0 alpha:Alpha];
+          	V.layer.cornerRadius = R;
+          	V.layer.borderWidth = 3;
+          	V.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.55].CGColor;
+          	V.userInteractionEnabled = NO;
+          	return V;
+          }
+
+          static UILabel* MakeLabel( CGRect Frame, NSString* Text, CGFloat Size )
+          {
+          	UILabel* L = [[UILabel alloc] initWithFrame:Frame];
+          	L.text = Text;
+          	L.textAlignment = NSTextAlignmentCenter;
+          	L.textColor = [UIColor whiteColor];
+          	L.font = [UIFont boldSystemFontOfSize:Size];
+          	L.backgroundColor = [UIColor clearColor];
+          	L.shadowColor = [UIColor colorWithWhite:0.0 alpha:0.7];
+          	L.shadowOffset = CGSizeMake( 0, 1 );
+          	L.userInteractionEnabled = NO;
+          	return L;
+          }
+
+          - (instancetype)initWithFrame:(CGRect)Frame
+          {
+          	if( ( self = [super initWithFrame:Frame] ) )
+          	{
+          		Touches = [NSMutableDictionary dictionary];
+          		Scale = 1.0;
+          		MenuMode = NO;
+          		self.multipleTouchEnabled = YES;
+          		self.exclusiveTouch = NO;
+          		self.backgroundColor = [UIColor clearColor];
+          		self.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+          		for( int i = 0; i < PAD_BTN_COUNT; i++ )
+          		{
+          			BtnViews[i] = MakeCircle( kBtn[i].Radius, kBtnIdleAlpha );
+          			CGFloat FontSize = ( i == PAD_BTN_FIRE ) ? 24 : ( kBtn[i].Radius >= 40 ? 18 : 14 );
+          			[BtnViews[i] addSubview:MakeLabel( BtnViews[i].bounds, [NSString stringWithUTF8String:kBtn[i].Label], FontSize )];
+          			[self addSubview:BtnViews[i]];
+          		}
+          		MenuView = [[UIView alloc] initWithFrame:CGRectMake( 0, 0, 132, 48 )];
+          		MenuView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.30];
+          		MenuView.layer.cornerRadius = 12;
+          		MenuView.layer.borderWidth = 3;
+          		MenuView.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.55].CGColor;
+          		MenuLabel = MakeLabel( MenuView.bounds, @"MENU", 18 );
+          		[MenuView addSubview:MenuLabel];
+          		MenuView.userInteractionEnabled = NO;
+          		[self addSubview:MenuView];
+          		StickHint = MakeCircle( 80, 0.06 );  [self addSubview:StickHint];   // where the stick will appear
+          		StickBase = MakeCircle( 80, 0.12 );  StickBase.hidden = YES; [self addSubview:StickBase];
+          		StickKnob = MakeCircle( 34, 0.38 );  StickKnob.hidden = YES; [self addSubview:StickKnob];
+          		[self setNeedsLayout];
+          	}
+          	return self;
+          }
+
+          - (void)setMenuMode:(BOOL)InMenu
+          {
+          	if( InMenu == MenuMode ) return;
+          	[self releaseAll];
+          	MenuMode = InMenu;
+          	for( int i = 0; i < PAD_BTN_COUNT; i++ ) BtnViews[i].hidden = InMenu;
+          	StickHint.hidden = InMenu;
+          	MenuLabel.text = InMenu ? @"CLOSE" : @"MENU";
+          	[self setNeedsLayout];
+          }
+
+          - (void)layoutSubviews
+          {
+          	[super layoutSubviews];
+          	CGRect B = self.bounds;
+          	Scale = PadScale( B.size );
+          	for( int i = 0; i < PAD_BTN_COUNT; i++ )
+          	{
+          		BtnViews[i].transform = CGAffineTransformIdentity;
+          		BtnViews[i].center = CGPointMake( B.size.width - kBtn[i].FromRight * Scale, B.size.height - kBtn[i].FromBottom * Scale );
+          		BtnViews[i].transform = CGAffineTransformMakeScale( Scale, Scale );
+          	}
+          	MenuView.transform = CGAffineTransformIdentity;
+          	MenuView.center = CGPointMake( B.size.width * 0.5, 36 * Scale );
+          	MenuView.transform = CGAffineTransformMakeScale( Scale, Scale );
+          	StickHint.transform = CGAffineTransformIdentity;
+          	StickHint.center = CGPointMake( 150 * Scale, B.size.height - 150 * Scale );
+          	StickHint.transform = CGAffineTransformMakeScale( Scale, Scale );
+          	StickBase.transform = CGAffineTransformMakeScale( Scale, Scale );
+          	StickKnob.transform = CGAffineTransformMakeScale( Scale, Scale );
+          }
+
+          - (CGRect)menuHitRect { return CGRectInset( MenuView.frame, -16, -16 ); }
+
+          // In the menu only the CLOSE button is ours; every other touch falls through to SDL (touch -> mouse).
+          - (UIView*)hitTest:(CGPoint)P withEvent:(UIEvent*)E
+          {
+          	if( self.hidden ) return nil;
+          	if( MenuMode ) return CGRectContainsPoint( [self menuHitRect], P ) ? self : nil;
+          	return self;
+          }
+
+          - (int)buttonAt:(CGPoint)P
+          {
+          	CGRect B = self.bounds;
+          	int Best = -1; CGFloat BestD = 1e9;
+          	for( int i = 0; i < PAD_BTN_COUNT; i++ )
+          	{
+          		CGPoint C = CGPointMake( B.size.width - kBtn[i].FromRight * Scale, B.size.height - kBtn[i].FromBottom * Scale );
+          		CGFloat R = ( kBtn[i].Radius + 22 ) * Scale; // generous hit area: thumbs are fat
+          		CGFloat D2 = ( P.x - C.x ) * ( P.x - C.x ) + ( P.y - C.y ) * ( P.y - C.y );
+          		if( D2 <= R * R && D2 < BestD ) { BestD = D2; Best = i; }
+          	}
+          	return Best;
+          }
+
+          - (BOOL)hasRole:(int)Role
+          {
+          	for( UE1PadTouch* T in [Touches allValues] ) if( T->Role == Role ) return YES;
+          	return NO;
+          }
+
+          - (void)updateStick:(UE1PadTouch*)T at:(CGPoint)P
+          {
+          	const CGFloat Radius = 80.0 * Scale;
+          	CGFloat DX = ( P.x - T->Origin.x ) / Radius, DY = ( P.y - T->Origin.y ) / Radius;
+          	CGFloat Len = sqrt( DX * DX + DY * DY );
+          	if( Len > 1.0 ) { DX /= Len; DY /= Len; Len = 1.0; }
+          	const CGFloat Dead = 0.12;
+          	if( Len < Dead ) { DX = DY = 0; }
+          	else { CGFloat K = ( Len - Dead ) / ( 1.0 - Dead ) / Len; DX *= K; DY *= K; }
+          	// SDL convention: up / left are negative; screen Y grows downward -> same sign.
+          	PushAxis( SDL_CONTROLLER_AXIS_LEFTX, (int)( DX * 32767 ) );
+          	PushAxis( SDL_CONTROLLER_AXIS_LEFTY, (int)( DY * 32767 ) );
+          	StickKnob.center = CGPointMake( T->Origin.x + DX * Radius * 0.9, T->Origin.y + DY * Radius * 0.9 );
+          }
+
+          - (void)setButton:(int)Idx pressed:(BOOL)Down
+          {
+          	BtnViews[Idx].backgroundColor = [UIColor colorWithWhite:1.0 alpha:Down ? kBtnDownAlpha : kBtnIdleAlpha];
+          }
+
+          - (void)touchesBegan:(NSSet*)Set withEvent:(UIEvent*)E
+          {
+          	CGRect B = self.bounds;
+          	for( UITouch* U in Set )
+          	{
+          		CGPoint P = [U locationInView:self];
+          		UE1PadTouch* T = [UE1PadTouch new];
+          		T->Origin = P; T->Btn = -1; T->Role = ROLE_NONE;
+          		if( CGRectContainsPoint( [self menuHitRect], P ) )
+          		{
+          			T->Role = ROLE_MENU;
+          			MenuView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.60];
+          			PushEscape();
+          		}
+          		else if( !MenuMode )
+          		{
+          			int Bi = [self buttonAt:P];
+          			if( Bi >= 0 )
+          			{
+          				T->Role = ROLE_BUTTON; T->Btn = Bi; ApplyButton( Bi, true );
+          				[self setButton:Bi pressed:YES];
+          			}
+          			else if( P.x < B.size.width * 0.5 )
+          			{
+          				if( ![self hasRole:ROLE_MOVE] ) T->Role = ROLE_MOVE;
+          			}
+          			else if( ![self hasRole:ROLE_LOOK] ) T->Role = ROLE_LOOK;
+          		}
+          		if( T->Role == ROLE_MOVE )
+          		{
+          			StickBase.center = P; StickKnob.center = P;
+          			StickBase.hidden = NO; StickKnob.hidden = NO; StickHint.hidden = YES;
+          		}
+          		[Touches setObject:T forKey:[NSValue valueWithNonretainedObject:U]];
+          	}
+          }
+
+          - (void)touchesMoved:(NSSet*)Set withEvent:(UIEvent*)E
+          {
+          	for( UITouch* U in Set )
+          	{
+          		UE1PadTouch* T = [Touches objectForKey:[NSValue valueWithNonretainedObject:U]];
+          		if( !T ) continue;
+          		if( T->Role == ROLE_MOVE )
+          			[self updateStick:T at:[U locationInView:self]];
+          		else if( T->Role == ROLE_LOOK || ( T->Role == ROLE_BUTTON && T->Btn == PAD_BTN_FIRE ) )
+          		{
+          			// Relative drag, exactly like moving a mouse: no stick, no recentring.
+          			CGPoint P = [U locationInView:self], Q = [U previousLocationInView:self];
+          			UE1IOSPushLook( (float)( P.x - Q.x ) * GLookSens, (float)( P.y - Q.y ) * GLookSens );
+          		}
+          	}
+          }
+
+          - (void)endTouch:(UE1PadTouch*)T
+          {
+          	if( T->Role == ROLE_BUTTON )
+          	{
+          		ApplyButton( T->Btn, false );
+          		[self setButton:T->Btn pressed:NO];
+          	}
+          	else if( T->Role == ROLE_MOVE )
+          	{
+          		PushAxis( SDL_CONTROLLER_AXIS_LEFTX, 0 );
+          		PushAxis( SDL_CONTROLLER_AXIS_LEFTY, 0 );
+          		StickBase.hidden = YES; StickKnob.hidden = YES; StickHint.hidden = MenuMode;
+          	}
+          	else if( T->Role == ROLE_MENU )
+          	{
+          		MenuView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.30];
+          	}
+          }
+
+          - (void)touchesEnded:(NSSet*)Set withEvent:(UIEvent*)E
+          {
+          	for( UITouch* U in Set )
+          	{
+          		NSValue* K = [NSValue valueWithNonretainedObject:U];
+          		UE1PadTouch* T = [Touches objectForKey:K];
+          		if( T ) { [self endTouch:T]; [Touches removeObjectForKey:K]; }
+          	}
+          }
+
+          - (void)touchesCancelled:(NSSet*)Set withEvent:(UIEvent*)E { [self touchesEnded:Set withEvent:E]; }
+
+          - (void)releaseAll
+          {
+          	for( UE1PadTouch* T in [Touches allValues] ) [self endTouch:T];
+          	[Touches removeAllObjects];
+          }
+          @end
+
+          // ---------------------------------------------------------------------------
+          // Per-frame hook from NSDLViewport + lifecycle
+          // ---------------------------------------------------------------------------
+          static UE1PadView* GPad = nil;
+          static BOOL GLifecycleWatch = NO;
+
+          static int SDLCALL LifecycleWatch( void* /*UserData*/, SDL_Event* E )
+          {
+          	// Delivered synchronously: the process is suspended right after this returns.
+          	if( E->type == SDL_APP_WILLENTERBACKGROUND )      UE1AndroidSetAudioSuspended( 1 );
+          	else if( E->type == SDL_APP_DIDENTERFOREGROUND )  UE1AndroidSetAudioSuspended( 0 );
+          	return 0;
+          }
+
+          static BOOL HasMFiController( void )
+          {
+          	if( !NSClassFromString( @"GCController" ) ) return NO;
+          	return [[GCController controllers] count] > 0;
+          }
+
+          extern "C" void UE1IOSSetUIState( int InMenu, int /*Typing*/ )
+          {
+          	@autoreleasepool
+          	{
+          		if( !GLifecycleWatch ) { SDL_AddEventWatch( LifecycleWatch, NULL ); GLifecycleWatch = YES; }
+
+          		// Fullscreen: iOS 7 can bring the status bar back (alerts, app switcher, rotation).
+          		// Keep it hidden and keep the screen awake. Cheap enough to check every frame.
+          		{
+          			UIApplication* App = [UIApplication sharedApplication];
+          			if( !App.statusBarHidden ) [App setStatusBarHidden:YES withAnimation:UIStatusBarAnimationNone];
+          			if( !App.idleTimerDisabled ) App.idleTimerDisabled = YES;
+          		}
+
+          		UIWindow* Win = [[UIApplication sharedApplication] keyWindow];
+          		if( !Win ) return;
+          		UIView* Host = Win.rootViewController ? Win.rootViewController.view : Win;
+
+          		BOOL Fresh = NO;
+          		if( !GPad || GPad.superview != Host )
+          		{
+          			[GPad removeFromSuperview];
+          			GPad = [[UE1PadView alloc] initWithFrame:Host.bounds];
+          			[Host addSubview:GPad];
+          			Fresh = YES;
+          		}
+          		// The pad stays up in menus (only its MENU/CLOSE button is active there); an MFi pad replaces it.
+          		const BOOL Hide = HasMFiController();
+          		if( Hide != GPad.hidden || Fresh )
+          		{
+          			if( Hide ) [GPad releaseAll];
+          			GPad.hidden = Hide;
+          			if( !Hide ) [Host bringSubviewToFront:GPad];
+          		}
+          		[GPad setMenuMode:( InMenu != 0 )];
+          	}
+          }
+          '''
+          open(host_path, 'w', encoding='utf-8', newline='').write(host_src[:host_src.index(pad_marker)] + PAD_V2.lstrip('\n'))
+
           print("diag patches applied")
           EOF_PY
           python3 -I ios/scripts/apply_diag.py
