@@ -2144,6 +2144,8 @@ jobs:
           # ---------------- SDL joystick: SDL_JOYSTICK must stay ON (UE1's SDL_Init requests SDL_INIT_JOYSTICK and fails with
           # "SDL not built with joystick support" otherwise). The MFi driver can't build with the 9.3 SDK -> use SDL's dummy driver.
           edit('third_party/SDL2/CMakeLists.txt', [
+           # SDL typo: framework is spelled 'Coremotion' (fine on case-insensitive macOS, not for our Linux-hosted SDK lookup)
+           ('FRAMEWORK,Coremotion>', 'FRAMEWORK,CoreMotion>'),
            ('      file(GLOB JOYSTICK_SOURCES ${SDL2_SOURCE_DIR}/src/joystick/steam/*.c)\n      set(SDL_JOYSTICK_MFI 1)\n',
             '      file(GLOB JOYSTICK_SOURCES ${SDL2_SOURCE_DIR}/src/joystick/steam/*.c ${SDL2_SOURCE_DIR}/src/joystick/dummy/*.c)\n      set(SDL_JOYSTICK_DUMMY 1)\n      set(MFI_JOYSTICK_SOURCES "")\n'),
           ])
