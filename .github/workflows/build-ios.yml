@@ -2159,6 +2159,14 @@ jobs:
           with open('third_party/SDL2/src/joystick/SDL_joystick.c', 'a', encoding='utf-8', newline='') as f:
               f.write('\n/* iOS build without the MFi driver: satisfy SDL_uikitview.m */\nint SDL_AppleTVRemoteOpenedAsJoystick = 0;\n')
 
+          # ---------------- Engine.Engine.Render must be the Render package's renderer (Render.Render), NOT the GLES *device*.
+          # The host forced Render=NOpenGLESDrv.NOpenGLESRenderDevice -> "not a child class of Engine.RenderBase" at startup.
+          # (Overwrite=YES, so an already-written bad Unreal.ini on the device is repaired on next launch.)
+          edit('ios/host/UE1IOSHost.mm', [
+           ('IniSet( L, @"Engine.Engine", @"Render",               @"NOpenGLESDrv.NOpenGLESRenderDevice", YES );',
+            'IniSet( L, @"Engine.Engine", @"Render",               @"Render.Render",                      YES );'),
+          ])
+
           print("diag patches applied")
           EOF_PY
           python3 -I ios/scripts/apply_diag.py
