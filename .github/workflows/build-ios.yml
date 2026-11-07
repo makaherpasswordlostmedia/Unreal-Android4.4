@@ -2211,24 +2211,24 @@ jobs:
               sys.exit("expected 4 x %s in NOpenGLESDrv.cpp, found %d" % (needle, src.count(needle)))
           open(path, 'w', encoding='utf-8', newline='').write(src.replace(needle, 'glBindFramebuffer( GL_FRAMEBUFFER, UE1GLESDefaultFBO )'))
 
-          # ---------------- iPad 1 / iOS 7: SDL reports the GL surface as 768x1024 (portrait) while the game renders
-          # 1024x768 -> viewport/blit use the wrong size and the picture fills only part of the screen. Ask GL for the
-          # real size of the on-screen renderbuffer once, and make every SDL_GL_GetDrawableSize() in this file return it.
+          # ---------------- iPad 1 / iOS 7: SDL's idea of the surface size (768x1024 portrait at start) can disagree with the real
+          # on-screen renderbuffer, so the picture fills only part of the screen. Ask GL for the real renderbuffer size
+          # (re-checked every 250 ms, logged on change) and make every SDL_GL_GetDrawableSize() in this file return it.
           edit('engine/Source/NOpenGLESDrv/NOpenGLESDrv.cpp', [
            ('#ifdef PLATFORM_IOS\nstatic GLuint UE1GLESDefaultFBO = 0;',
             '#ifdef PLATFORM_IOS\n'
             'static GLint UE1IOSRealW = 0, UE1IOSRealH = 0; // true size of the on-screen renderbuffer\n'
             'static int UE1IOSGetDrawable( SDL_Window* W, int* OutW, int* OutH )\n'
             '{\n'
-            '\tif( UE1IOSRealW > 0 && UE1IOSRealH > 0 ) { *OutW = UE1IOSRealW; *OutH = UE1IOSRealH; return 0; }\n'
-            '\treturn SDL_GL_GetDrawableSize( W, OutW, OutH ), 0;\n'
-            '}\n'
-            '#define SDL_GL_GetDrawableSize UE1IOSGetDrawable\n'
-            'static GLuint UE1GLESDefaultFBO = 0;'),
-           ('\t\tdebugf( NAME_Log, "GLES: iOS default framebuffer = %u", (unsigned)UE1GLESDefaultFBO );\n',
-            '\t\tdebugf( NAME_Log, "GLES: iOS default framebuffer = %u", (unsigned)UE1GLESDefaultFBO );\n'
+            '\tstatic Uint32 LastCheck = 0;\n'
+            '\tUint32 Now = SDL_GetTicks();\n'
+            '\tif( LastCheck == 0 || Now - LastCheck > 250 )\n'
+            '\t{\n'
+            '\t\tLastCheck = Now | 1;\n'
+            '\t\tGLint Fbo = 0, Rb = 0, PrevRb = 0, RW = 0, RH = 0;\n'
+            '\t\tglGetIntegerv( GL_FRAMEBUFFER_BINDING, &Fbo );\n'
+            '\t\tif( Fbo )\n'
             '\t\t{\n'
-            '\t\t\tGLint Rb = 0, PrevRb = 0, RW = 0, RH = 0;\n'
             '\t\t\tglGetFramebufferAttachmentParameteriv( GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &Rb );\n'
             '\t\t\tif( Rb )\n'
             '\t\t\t{\n'
@@ -2238,9 +2238,20 @@ jobs:
             '\t\t\t\tglGetRenderbufferParameteriv( GL_RENDERBUFFER, GL_RENDERBUFFER_HEIGHT, &RH );\n'
             '\t\t\t\tglBindRenderbuffer( GL_RENDERBUFFER, (GLuint)PrevRb );\n'
             '\t\t\t}\n'
-            '\t\t\tif( RW > 0 && RH > 0 ) { UE1IOSRealW = RW; UE1IOSRealH = RH; }\n'
-            '\t\t\tdebugf( NAME_Log, "GLES: iOS real renderbuffer = %ix%i", (int)RW, (int)RH );\n'
-            '\t\t}\n'),
+            '\t\t}\n'
+            '\t\tif( RW > 0 && RH > 0 && ( RW != UE1IOSRealW || RH != UE1IOSRealH ) )\n'
+            '\t\t{\n'
+            '\t\t\tint SW = 0, SH = 0, GW = 0, GH = 0;\n'
+            '\t\t\tif( W ) { SDL_GetWindowSize( W, &SW, &SH ); SDL_GL_GetDrawableSize( W, &GW, &GH ); }\n'
+            '\t\t\tdebugf( NAME_Log, "GLES: iOS size change: renderbuffer %ix%i -> %ix%i (sdl window %ix%i, sdl drawable %ix%i)", (int)UE1IOSRealW, (int)UE1IOSRealH, (int)RW, (int)RH, SW, SH, GW, GH );\n'
+            '\t\t\tUE1IOSRealW = RW; UE1IOSRealH = RH;\n'
+            '\t\t}\n'
+            '\t}\n'
+            '\tif( UE1IOSRealW > 0 && UE1IOSRealH > 0 ) { *OutW = UE1IOSRealW; *OutH = UE1IOSRealH; return 0; }\n'
+            '\treturn SDL_GL_GetDrawableSize( W, OutW, OutH ), 0;\n'
+            '}\n'
+            '#define SDL_GL_GetDrawableSize UE1IOSGetDrawable\n'
+            'static GLuint UE1GLESDefaultFBO = 0;'),
           ])
 
           # ---------------- touch controls v2: bigger buttons with press feedback + stick hint; the pad stays on screen in menus
@@ -2383,8 +2394,7 @@ jobs:
           	if( InMenu == MenuMode ) return;
           	[self releaseAll];
           	MenuMode = InMenu;
-          	for( int i = 0; i < PAD_BTN_COUNT; i++ ) BtnViews[i].hidden = InMenu;
-          	StickHint.hidden = InMenu;
+          	StickHint.hidden = InMenu; // buttons stay visible and active in menus
           	MenuLabel.text = InMenu ? @"CLOSE" : @"MENU";
           	[self setNeedsLayout];
           }
@@ -2412,11 +2422,11 @@ jobs:
 
           - (CGRect)menuHitRect { return CGRectInset( MenuView.frame, -16, -16 ); }
 
-          // In the menu only the CLOSE button is ours; every other touch falls through to SDL (touch -> mouse).
+          // In the menu only the buttons + CLOSE are ours; every other touch falls through to SDL (touch -> mouse).
           - (UIView*)hitTest:(CGPoint)P withEvent:(UIEvent*)E
           {
           	if( self.hidden ) return nil;
-          	if( MenuMode ) return CGRectContainsPoint( [self menuHitRect], P ) ? self : nil;
+          	if( MenuMode ) return ( CGRectContainsPoint( [self menuHitRect], P ) || [self buttonAt:P] >= 0 ) ? self : nil;
           	return self;
           }
 
@@ -2474,7 +2484,7 @@ jobs:
           			MenuView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.60];
           			PushEscape();
           		}
-          		else if( !MenuMode )
+          		else
           		{
           			int Bi = [self buttonAt:P];
           			if( Bi >= 0 )
@@ -2482,6 +2492,7 @@ jobs:
           				T->Role = ROLE_BUTTON; T->Btn = Bi; ApplyButton( Bi, true );
           				[self setButton:Bi pressed:YES];
           			}
+          			else if( MenuMode ) { }
           			else if( P.x < B.size.width * 0.5 )
           			{
           				if( ![self hasRole:ROLE_MOVE] ) T->Role = ROLE_MOVE;
