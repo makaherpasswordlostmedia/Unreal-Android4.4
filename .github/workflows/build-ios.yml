@@ -2090,6 +2090,58 @@ jobs:
            ('  ios/host/UE1IOSHost.mm\n', '  ios/host/UE1IOSHost.mm\n  ios/host/ios_diag.mm\n'),
            ('set_source_files_properties(ios/host/UE1IOSHost.mm PROPERTIES', 'set_source_files_properties(ios/host/UE1IOSHost.mm ios/host/ios_diag.mm PROPERTIES'),
           ])
+
+          # ---------------------------------------------- step-by-step breadcrumbs (debugf => mirrored to unreal_ios.log)
+          D = lambda m: '\tdebugf( NAME_Log, "STEP: %s" );\n' % m
+          edit('engine/Source/Engine/Src/UnGame.cpp', [
+           ('\t// Call base.\n\tUEngine::Init();\n',
+            D('UGameEngine::Init begin -> UEngine::Init') + '\t// Call base.\n\tUEngine::Init();\n' + D('UEngine::Init done')),
+           ('\tappCleanFileCache();\n', D('appCleanFileCache') + '\tappCleanFileCache();\n'),
+           ('\t\tClient->Init( this );\n',
+            '\t\tdebugf( NAME_Log, "STEP: Client class constructed, Client->Init (SDL video/display)" );\n\t\tClient->Init( this );\n\t\tdebugf( NAME_Log, "STEP: Client->Init done" );\n'),
+           ('\t\tRender->Init( this );\n',
+            '\t\tdebugf( NAME_Log, "STEP: Render class constructed, Render->Init" );\n\t\tRender->Init( this );\n\t\tdebugf( NAME_Log, "STEP: Render->Init done" );\n'),
+           ('\t\tif( !LoadMap( FURL("Entry"), NULL, Error256 ) )\n',
+            '\t\tdebugf( NAME_Log, "STEP: loading Entry level (can take a long time on first run)" );\n\t\tif( !LoadMap( FURL("Entry"), NULL, Error256 ) )\n'),
+           ('\t\tExchange( GLevel, GEntry );\n', '\t\tExchange( GLevel, GEntry );\n\t\tdebugf( NAME_Log, "STEP: Entry level loaded" );\n'),
+           ('\tUBOOL Success = Browse( FURL(&LastURL,AutoURL,TRAVEL_Partial), Error256 );\n',
+            '\tdebugf( NAME_Log, "STEP: Browse initial URL \'%s\' (loads the first map)", AutoURL );\n\tUBOOL Success = Browse( FURL(&LastURL,AutoURL,TRAVEL_Partial), Error256 );\n\tdebugf( NAME_Log, "STEP: Browse returned %d err=\'%s\'", (int)Success, Error256 );\n'),
+           ('\t\tUViewport* Viewport = Client->NewViewport( GLevel, NAME_None );\n',
+            '\t\tdebugf( NAME_Log, "STEP: creating viewport" );\n\t\tUViewport* Viewport = Client->NewViewport( GLevel, NAME_None );\n\t\tdebugf( NAME_Log, "STEP: viewport created" );\n'),
+           ('\t\tViewport->OpenWindow( NULL, 0, Client->ViewportX, Client->ViewportY, INDEX_NONE, INDEX_NONE );\n',
+            '\t\tdebugf( NAME_Log, "STEP: Viewport->OpenWindow (SDL window + GL context + render device)" );\n\t\tViewport->OpenWindow( NULL, 0, Client->ViewportX, Client->ViewportY, INDEX_NONE, INDEX_NONE );\n\t\tdebugf( NAME_Log, "STEP: Viewport->OpenWindow done" );\n'),
+           ('\tguard(UGameEngine::Tick);\n\tINT LocalTickCycles=0;\n',
+            '\tguard(UGameEngine::Tick);\n\t{ static int TickN=0; ++TickN; if( TickN<=5 || TickN%600==0 ) debugf( NAME_Log, "STEP: UGameEngine::Tick #%d dt=%f", TickN, DeltaSeconds ); }\n\tINT LocalTickCycles=0;\n'),
+          ])
+
+          edit('engine/Source/NSDLDrv/Src/NSDLViewport.cpp', [
+           ('\t\t\t// Creating new viewport.\n\t\t\thWnd = SDL_CreateWindow( "", OpenX, OpenY, NewX, NewY, Flags );\n',
+            '\t\t\t// Creating new viewport.\n\t\t\tdebugf( NAME_Log, "STEP: SDL_CreateWindow %dx%d flags=0x%x DoOpenGL=%d", (int)NewX, (int)NewY, (unsigned)Flags, (int)DoOpenGL );\n'
+            '\t\t\thWnd = SDL_CreateWindow( "", OpenX, OpenY, NewX, NewY, Flags );\n\t\t\tdebugf( NAME_Log, "STEP: SDL_CreateWindow -> %p (%s)", hWnd, hWnd ? "ok" : SDL_GetError() );\n'),
+           ('\t\t\t\tGLCtx = SDL_GL_CreateContext( hWnd );\n',
+            '\t\t\t\tdebugf( NAME_Log, "STEP: SDL_GL_CreateContext (requested GLES%d.%d)", 2, 0 );\n\t\t\t\tGLCtx = SDL_GL_CreateContext( hWnd );\n\t\t\t\tdebugf( NAME_Log, "STEP: SDL_GL_CreateContext -> %p (%s)", GLCtx, GLCtx ? "ok" : SDL_GetError() );\n'),
+           ('\t\tSDL_ShowWindow( hWnd );\n',
+            '\t\tSDL_ShowWindow( hWnd );\n\t\t{\n\t\t\tint Dw = 0, Dh = 0, Ww = 0, Wh = 0;\n\t\t\tSDL_GetWindowSize( hWnd, &Ww, &Wh );\n\t\t\tif( DoOpenGL ) SDL_GL_GetDrawableSize( hWnd, &Dw, &Dh );\n'
+            '\t\t\tdebugf( NAME_Log, "STEP: SDL_ShowWindow done; window=%dx%d drawable=%dx%d sdlflags=0x%x", Ww, Wh, Dw, Dh, (unsigned)SDL_GetWindowFlags( hWnd ) );\n\t\t}\n'),
+          ])
+
+          edit('engine/Source/NOpenGLESDrv/NOpenGLESDrv.cpp', [
+           ('\tdebugf( NAME_Log, "Got OpenGL %s", glGetString( GL_VERSION ) );\n',
+            '\tdebugf( NAME_Log, "Got OpenGL %s", glGetString( GL_VERSION ) );\n'
+            '\tdebugf( NAME_Log, "GLES: vendor=%s renderer=%s glsl=%s", (const char*)glGetString( GL_VENDOR ), (const char*)glGetString( GL_RENDERER ), (const char*)glGetString( GL_SHADING_LANGUAGE_VERSION ) );\n'
+            '\tdebugf( NAME_Log, "GLES: extensions: %.700s", glGetString( GL_EXTENSIONS ) ? (const char*)glGetString( GL_EXTENSIONS ) : "(none)" );\n'
+            '\tdebugf( NAME_Log, "GLES: glGetError after context = 0x%x", (unsigned)glGetError() );\n'),
+           ('\tguard(UNOpenGLESRenderDevice::Lock);\n',
+            '\tguard(UNOpenGLESRenderDevice::Lock);\n\t{ static int LockN=0; ++LockN; if( LockN<=5 || LockN%600==0 ) debugf( NAME_Log, "GLES: Lock frame %d", LockN ); }\n'),
+           ('\tguard(UNOpenGLESRenderDevice::Unlock);\n',
+            '\tguard(UNOpenGLESRenderDevice::Unlock);\n\t{ static int UnlockN=0; ++UnlockN; if( UnlockN<=5 || UnlockN%600==0 ) debugf( NAME_Log, "GLES: Unlock frame %d blit=%d glError=0x%x", UnlockN, (int)Blit, (unsigned)glGetError() ); }\n'),
+          ])
+
+          edit('engine/Source/Unreal/Src/SDLLaunch.cpp', [
+           ('\t\tEngine->Tick( NewTime - OldTime );\n',
+            '\t\t{ static int LoopN=0; ++LoopN; if( LoopN<=3 ) debugf( NAME_Log, "STEP: MainLoop iteration %d", LoopN ); }\n\t\tEngine->Tick( NewTime - OldTime );\n'),
+          ])
+
           print("diag patches applied")
           EOF_PY
           python3 -I ios/scripts/apply_diag.py
