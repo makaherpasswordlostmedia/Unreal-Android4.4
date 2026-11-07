@@ -2100,6 +2100,13 @@ jobs:
            ('#include <pthread.h>\n', '#include <pthread.h>\nextern "C" void UE1IOSLog( const char* Msg ); // ios_diag.mm\n'),
           ])
 
+          # ---------------- clang 19: '[[' starts a C++11 attribute -> 'expected body of lambda expression' on
+          # `[[Trim( ... )] floatValue]`. Rewrite as a plain nested message send.
+          edit('ios/host/UE1IOSHost.mm', [
+           ('float V = [[Trim( [T substringFromIndex:Eq.location + 1] )] floatValue];',
+            'float V = [Trim( [T substringFromIndex:Eq.location + 1] ) floatValue];'),
+          ])
+
           # --------------------------------------------------------------- CMakeLists
           edit('CMakeLists.txt', [
            ('  ios/host/UE1IOSHost.mm\n', '  ios/host/UE1IOSHost.mm\n  ios/host/ios_diag.mm\n'),
