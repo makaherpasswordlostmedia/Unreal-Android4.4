@@ -1777,8 +1777,6 @@ jobs:
           set(SDL_AUDIO  OFF CACHE BOOL "" FORCE)
           set(SDL_HAPTIC OFF CACHE BOOL "" FORCE)
           set(SDL_HIDAPI OFF CACHE BOOL "" FORCE)
-          # iPhoneOS 9.3 SDK has no GCMicroGamepad etc. -> MFi joystick can't build; SDL falls back to its dummy joystick driver
-          set(SDL_JOYSTICK OFF CACHE BOOL "" FORCE)
           set(SDL_OPENGLES ON CACHE BOOL "" FORCE)
           add_subdirectory(third_party/SDL2 EXCLUDE_FROM_ALL)
 
@@ -2140,6 +2138,14 @@ jobs:
           edit('engine/Source/Unreal/Src/SDLLaunch.cpp', [
            ('\t\tEngine->Tick( NewTime - OldTime );\n',
             '\t\t{ static int LoopN=0; ++LoopN; if( LoopN<=3 ) debugf( NAME_Log, "STEP: MainLoop iteration %d", LoopN ); }\n\t\tEngine->Tick( NewTime - OldTime );\n'),
+          ])
+
+
+          # ---------------- SDL joystick: SDL_JOYSTICK must stay ON (UE1's SDL_Init requests SDL_INIT_JOYSTICK and fails with
+          # "SDL not built with joystick support" otherwise). The MFi driver can't build with the 9.3 SDK -> use SDL's dummy driver.
+          edit('third_party/SDL2/CMakeLists.txt', [
+           ('      file(GLOB JOYSTICK_SOURCES ${SDL2_SOURCE_DIR}/src/joystick/steam/*.c)\n      set(SDL_JOYSTICK_MFI 1)\n',
+            '      file(GLOB JOYSTICK_SOURCES ${SDL2_SOURCE_DIR}/src/joystick/steam/*.c ${SDL2_SOURCE_DIR}/src/joystick/dummy/*.c)\n      set(SDL_JOYSTICK_DUMMY 1)\n      set(MFI_JOYSTICK_SOURCES "")\n'),
           ])
 
           print("diag patches applied")
