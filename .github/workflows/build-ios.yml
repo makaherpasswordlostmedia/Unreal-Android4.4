@@ -1877,6 +1877,222 @@ jobs:
           # iOS 11 view-controller selectors aren't declared in the 9.3 SDK: call them dynamically (already guarded by respondsToSelector)
           sed -i 's|\[viewcontroller setNeedsUpdateOfHomeIndicatorAutoHidden\];|[viewcontroller performSelector:@selector(setNeedsUpdateOfHomeIndicatorAutoHidden)];|; s|\[viewcontroller setNeedsUpdateOfScreenEdgesDeferringSystemGestures\];|[viewcontroller performSelector:@selector(setNeedsUpdateOfScreenEdgesDeferringSystemGestures)];|' third_party/SDL2/src/video/uikit/SDL_uikitviewcontroller.m
           ! grep -q '\[viewcontroller setNeedsUpdateOf' third_party/SDL2/src/video/uikit/SDL_uikitviewcontroller.m
+          # ---- diagnostics: mirror engine log to Documents/unreal_ios.log, crash/exception handlers, heartbeat ----
+          cat > ios/host/ios_diag.mm <<'EOF_SRC'
+          // ios_diag.mm - persistent log + crash/exception/hang diagnostics for the iOS host.
+          //
+          // Everything goes to <App>/Documents/unreal_ios.log (and NSLog):
+          //   * engine debugf()/appError() lines (mirrored from UnPlat.cpp)
+          //   * SDL_Log / SDL_SetError-style messages
+          //   * fatal signals (SEGV/BUS/ILL/ABRT/FPE/TRAP) with a backtrace
+          //   * uncaught NSException and std::terminate with the exception text
+          //   * a heartbeat with the last log line, so a hang/black screen shows WHERE it stopped
+          #import <Foundation/Foundation.h>
+          #import <UIKit/UIKit.h>
+          #include <SDL2/SDL.h>
+          #include <execinfo.h>
+          #include <fcntl.h>
+          #include <pthread.h>
+          #include <signal.h>
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <string.h>
+          #include <time.h>
+          #include <unistd.h>
+          #include <exception>
+
+          extern "C" const char* UE1IOSDocumentsDir( void );
+
+          static int GFd = -1;
+          static pthread_mutex_t GLock = PTHREAD_MUTEX_INITIALIZER;
+          static char GLast[256] = "(nothing logged yet)";
+
+          static void RawWrite( const char* S )
+          {
+          	if( GFd < 0 || !S ) return;
+          	size_t N = strlen( S );
+          	while( N )
+          	{
+          		ssize_t W = write( GFd, S, N );
+          		if( W <= 0 ) break;
+          		S += W; N -= (size_t)W;
+          	}
+          }
+
+          static void EnsureOpen( void )
+          {
+          	if( GFd >= 0 ) return;
+          	char Path[1100];
+          	snprintf( Path, sizeof(Path), "%s/unreal_ios.log", UE1IOSDocumentsDir() );
+          	GFd = open( Path, O_WRONLY | O_CREAT | O_APPEND, 0644 );
+          }
+
+          static void LogLine( const char* Msg, bool UpdateLast )
+          {
+          	if( !Msg ) return;
+          	pthread_mutex_lock( &GLock );
+          	EnsureOpen();
+          	char Line[1400], Ts[16];
+          	time_t Now = time( NULL ); struct tm Tm; localtime_r( &Now, &Tm );
+          	strftime( Ts, sizeof(Ts), "%H:%M:%S", &Tm );
+          	snprintf( Line, sizeof(Line), "[%s] %.1300s\n", Ts, Msg );
+          	RawWrite( Line );
+          	if( UpdateLast ) strlcpy( GLast, Msg, sizeof(GLast) );
+          	pthread_mutex_unlock( &GLock );
+          }
+
+          extern "C" void UE1IOSLog( const char* Msg )
+          {
+          	LogLine( Msg, true );
+          	if( Msg ) NSLog( @"[Unreal] %s", Msg );
+          }
+
+          static void CrashHandler( int Sig, siginfo_t* Si, void* )
+          {
+          	char B[400];
+          	snprintf( B, sizeof(B), "\n*** CRASH: signal %d (%s) fault addr=%p\n*** last log line: %s\n",
+          		Sig, strsignal( Sig ), Si ? Si->si_addr : NULL, GLast );
+          	RawWrite( B );
+          	void* Bt[64]; int N = backtrace( Bt, 64 );
+          	if( GFd >= 0 ) backtrace_symbols_fd( Bt, N, GFd );
+          	RawWrite( "*** end of crash report\n" );
+          	signal( Sig, SIG_DFL );
+          	raise( Sig );
+          }
+
+          static void TerminateHandler( void )
+          {
+          	static int Busy = 0;
+          	if( !Busy )
+          	{
+          		Busy = 1;
+          		char B[600];
+          		try { throw; }
+          		catch( const std::exception& E ) { snprintf( B, sizeof(B), "std::exception: %s", E.what() ); }
+          		catch( const char* S )           { snprintf( B, sizeof(B), "thrown const char*: %s", S ? S : "(null)" ); }
+          		catch( int I )                   { snprintf( B, sizeof(B), "thrown int: %d (Unreal appError?)", I ); }
+          		catch( ... )                     { snprintf( B, sizeof(B), "unknown exception" ); }
+          		char M[800];
+          		snprintf( M, sizeof(M), "*** std::terminate: %s | last log line: %s", B, GLast );
+          		LogLine( M, false );
+          		void* Bt[64]; int N = backtrace( Bt, 64 );
+          		if( GFd >= 0 ) backtrace_symbols_fd( Bt, N, GFd );
+          	}
+          	abort();
+          }
+
+          static void ObjCExceptionHandler( NSException* E )
+          {
+          	NSString* S = [NSString stringWithFormat:@"*** Uncaught NSException %@: %@\n%@", E.name, E.reason, [E callStackSymbols]];
+          	LogLine( [S UTF8String], false );
+          }
+
+          static void SDLCALL SDLLogCB( void*, int Cat, SDL_LogPriority Pri, const char* Msg )
+          {
+          	char B[1100];
+          	snprintf( B, sizeof(B), "SDL[cat=%d pri=%d]: %s", Cat, (int)Pri, Msg ? Msg : "" );
+          	LogLine( B, true );
+          }
+
+          static void* HeartbeatThread( void* )
+          {
+          	int T = 0;
+          	for( ;; )
+          	{
+          		sleep( T < 60 ? 5 : 30 );
+          		T += ( T < 60 ? 5 : 30 );
+          		char B[400];
+          		snprintf( B, sizeof(B), "heartbeat +%ds | last log line: %s", T, GLast );
+          		LogLine( B, false );
+          	}
+          	return NULL;
+          }
+
+          __attribute__((constructor)) static void UE1IOSDiagInit( void )
+          {
+          	@autoreleasepool
+          	{
+          		pthread_mutex_lock( &GLock ); EnsureOpen(); pthread_mutex_unlock( &GLock );
+          		char H[300];
+          		snprintf( H, sizeof(H), "\n==== Unreal iOS launch | build %s %s | iOS %s | %s ====",
+          			__DATE__, __TIME__, [[[UIDevice currentDevice] systemVersion] UTF8String], [[[UIDevice currentDevice] model] UTF8String] );
+          		LogLine( H, true );
+          	}
+          	static char AltStack[64 * 1024];
+          	stack_t Ss; Ss.ss_sp = AltStack; Ss.ss_size = sizeof(AltStack); Ss.ss_flags = 0;
+          	sigaltstack( &Ss, NULL );
+          	struct sigaction Sa; memset( &Sa, 0, sizeof(Sa) );
+          	Sa.sa_sigaction = CrashHandler;
+          	Sa.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESETHAND;
+          	sigemptyset( &Sa.sa_mask );
+          	const int Sigs[] = { SIGSEGV, SIGBUS, SIGILL, SIGABRT, SIGFPE, SIGTRAP };
+          	for( size_t i = 0; i < sizeof(Sigs)/sizeof(Sigs[0]); i++ ) sigaction( Sigs[i], &Sa, NULL );
+          	std::set_terminate( TerminateHandler );
+          	NSSetUncaughtExceptionHandler( &ObjCExceptionHandler );
+          	SDL_LogSetAllPriority( SDL_LOG_PRIORITY_INFO );
+          	SDL_LogSetOutputFunction( SDLLogCB, NULL );
+          	pthread_t Th;
+          	if( pthread_create( &Th, NULL, HeartbeatThread, NULL ) == 0 ) pthread_detach( Th );
+          	LogLine( "diag: crash/exception/SDL handlers + heartbeat installed", true );
+          }
+          EOF_SRC
+          cat > ios/scripts/apply_diag.py <<'EOF_PY'
+          #!/usr/bin/env python3
+          """Wire engine logging into the iOS host log (unreal_ios.log) + add breadcrumbs.
+          Run from the repo root. Every edit asserts that its anchor exists exactly once."""
+          import re, sys
+
+          def edit(path, pairs):
+              s = open(path, encoding='utf-8', newline='').read()
+              for old, new in pairs:
+                  if s.count(old) != 1:
+                      sys.exit("anchor not found exactly once in %s:\n%s" % (path, old))
+                  s = s.replace(old, new)
+              open(path, 'w', encoding='utf-8', newline='').write(s)
+
+          # ---------------------------------------------------------------- UnPlat.cpp
+          edit('engine/Source/Core/Src/UnPlat.cpp', [
+           ('#if defined(PLATFORM_SDL)\n#include "SDL2/SDL.h"\n',
+            '#if defined(PLATFORM_SDL)\n#include "SDL2/SDL.h"\n#ifdef PLATFORM_IOS\nextern "C" void UE1IOSLog( const char* Msg );\n#endif\n'),
+           ('\t\t\tif( GLogHook )\n\t\t\t{\n\t\t\t\tGLogHook->WriteBinary( Data, Length, Event );',
+            '#ifdef PLATFORM_IOS\n\t\t\t{\n\t\t\t\tchar IosLine[1200];\n\t\t\t\tsnprintf( IosLine, sizeof(IosLine), "%s: %.1000s", *EventName, (const char*)Data );\n\t\t\t\tUE1IOSLog( IosLine );\n\t\t\t}\n#endif\n'
+            '\t\t\tif( GLogHook )\n\t\t\t{\n\t\t\t\tGLogHook->WriteBinary( Data, Length, Event );'),
+           ('void appError( const char* Msg )\n{\n',
+            'void appError( const char* Msg )\n{\n#ifdef PLATFORM_IOS\n\tUE1IOSLog( "appError called:" );\n\tUE1IOSLog( Msg ? Msg : "(null)" );\n\tif( GErrorHist[0] ) UE1IOSLog( GErrorHist );\n#endif\n'),
+           ('\tGLogFile = appFopen( GLogFname, "w+t" );\n\tif( GLogFile )\n',
+            '\tGLogFile = appFopen( GLogFname, "w+t" );\n#ifdef PLATFORM_IOS\n\t{\n\t\tchar IosMsg[1300]; char IosCwd[1024] = "?";\n\t\tgetcwd( IosCwd, sizeof(IosCwd) );\n\t\tsnprintf( IosMsg, sizeof(IosMsg), "appOpenLog: %s (cwd=%s) -> %s", GLogFname, IosCwd, GLogFile ? "OK" : "FAILED" );\n\t\tUE1IOSLog( IosMsg );\n\t}\n#endif\n\tif( GLogFile )\n'),
+          ])
+
+          # ------------------------------------------------------------- SDLLaunch.cpp
+          LOGI = lambda m: '#ifdef PLATFORM_IOS\n\tUE1IOSLog( "%s" );\n#endif\n' % m
+          edit('engine/Source/Unreal/Src/SDLLaunch.cpp', [
+           ('extern "C" void UE1IOSPrepareConfig( const char* SystemDir );\n#endif\n',
+            'extern "C" void UE1IOSPrepareConfig( const char* SystemDir );\n#endif\n#ifndef PLATFORM_IOS\n#define UE1IOSLog(x) ((void)0)\n#endif\n'),
+           ('\tGIsGuarded=0;\n\tGIsCriticalError=1;\n',
+            '\tGIsGuarded=0;\n\tGIsCriticalError=1;\n#ifdef PLATFORM_IOS\n\tUE1IOSLog( "HandleError: engine exception caught, GErrorHist follows" );\n\tUE1IOSLog( GErrorHist );\n#endif\n'),
+           ('\tappInit();\n', LOGI('InitEngine: appInit begin') + '\tappInit();\n' + LOGI('InitEngine: appInit done')),
+           ('\t// Create the global engine object.\n', LOGI('InitEngine: loading Engine.GameEngine class') + '\t// Create the global engine object.\n'),
+           ('\tEngine->Init();\n', LOGI('InitEngine: Engine->Init() begin (viewport / render device / audio)') + '\tEngine->Init();\n' + LOGI('InitEngine: Engine->Init() done')),
+           ('\t\tUEngine* Engine = InitEngine();\n\t\tif( !GIsRequestingExit )\n\t\t\tMainLoop( Engine );\n',
+            '\t\tUE1IOSLog( "main: InitEngine begin" );\n\t\tUEngine* Engine = InitEngine();\n\t\tUE1IOSLog( "main: InitEngine done, entering MainLoop" );\n\t\tif( !GIsRequestingExit )\n\t\t\tMainLoop( Engine );\n\t\tUE1IOSLog( "main: MainLoop returned" );\n'),
+           ('\t\t// Crashed.\n\t\ttry {HandleError();} catch( ... ) {}',
+            '\t\t// Crashed.\n\t\tUE1IOSLog( "main: caught exception from InitEngine/MainLoop" );\n\t\ttry {HandleError();} catch( ... ) {}'),
+          ])
+
+          # ---------------------------------------------------- host: take over the log
+          edit('ios/host/UE1IOSHost.mm', [
+           ('extern "C" void UE1IOSLog( const char* Msg )\n', 'static void UE1IOSLog_Unused( const char* Msg )\n'),
+           ('#include <pthread.h>\n', '#include <pthread.h>\nextern "C" void UE1IOSLog( const char* Msg ); // ios_diag.mm\n'),
+          ])
+
+          # --------------------------------------------------------------- CMakeLists
+          edit('CMakeLists.txt', [
+           ('  ios/host/UE1IOSHost.mm\n', '  ios/host/UE1IOSHost.mm\n  ios/host/ios_diag.mm\n'),
+           ('set_source_files_properties(ios/host/UE1IOSHost.mm PROPERTIES', 'set_source_files_properties(ios/host/UE1IOSHost.mm ios/host/ios_diag.mm PROPERTIES'),
+          ])
+          print("diag patches applied")
+          EOF_PY
+          python3 -I ios/scripts/apply_diag.py
       - name: Host tools
         run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build curl zip unzip xz-utils bzip2 git
       - name: Theos + toolchain + SDK
@@ -1949,6 +2165,33 @@ jobs:
         run: ios/scripts/package_ios.sh build build/out
       - uses: actions/upload-artifact@v4
         with: { name: Unreal98-armv7-iOS, path: build/out/UnrealiOS.ipa, if-no-files-found: error }
+      - name: Package .deb (jailbreak, installs to /Applications)
+        run: |
+          set -euo pipefail
+          APP=build/out/Payload/UnrealiOS.app
+          D=build/out/deb; rm -rf "$D"; mkdir -p "$D/DEBIAN" "$D/Applications"
+          cp -a "$APP" "$D/Applications/UnrealiOS.app"
+          chmod 755 "$D/Applications/UnrealiOS.app/UnrealiOS"
+          cat > "$D/DEBIAN/control" <<'EOF_CTL'
+          Package: com.example.unreal98.armv7
+          Name: Unreal 98
+          Version: 0.1.0
+          Architecture: iphoneos-arm
+          Description: Unreal Engine 1 (Unreal 98) for iOS armv7
+          Maintainer: makaherpasswordlostmedia
+          Author: makaherpasswordlostmedia
+          Section: Games
+          Depends: firmware (>= 7.0)
+          EOF_CTL
+          printf '#!/bin/sh\n(uicache -p /Applications/UnrealiOS.app || uicache) >/dev/null 2>&1 || true\nexit 0\n' > "$D/DEBIAN/postinst"
+          printf '#!/bin/sh\n(uicache) >/dev/null 2>&1 || true\nexit 0\n' > "$D/DEBIAN/postrm"
+          chmod 755 "$D/DEBIAN/postinst" "$D/DEBIAN/postrm"
+          # gzip: the dpkg on old iOS can't read xz/zstd
+          dpkg-deb --root-owner-group -Zgzip -b "$D" build/out/UnrealiOS_0.1.0_iphoneos-arm.deb
+          dpkg-deb -I build/out/UnrealiOS_0.1.0_iphoneos-arm.deb
+          dpkg-deb -c build/out/UnrealiOS_0.1.0_iphoneos-arm.deb | head -20
+      - uses: actions/upload-artifact@v4
+        with: { name: Unreal98-armv7-iOS-deb, path: build/out/UnrealiOS_0.1.0_iphoneos-arm.deb, if-no-files-found: error }
       - uses: actions/upload-artifact@v4
         if: always()
         with: { name: build-logs, path: "build-*.log", if-no-files-found: ignore }
