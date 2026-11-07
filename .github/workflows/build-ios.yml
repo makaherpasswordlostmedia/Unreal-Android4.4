@@ -2150,6 +2150,15 @@ jobs:
             '      file(GLOB JOYSTICK_SOURCES ${SDL2_SOURCE_DIR}/src/joystick/steam/*.c ${SDL2_SOURCE_DIR}/src/joystick/dummy/*.c)\n      set(SDL_JOYSTICK_DUMMY 1)\n      set(MFI_JOYSTICK_SOURCES "")\n'),
           ])
 
+          # ---------------- SDL_joystick.c registers &SDL_IOS_JoystickDriver on a PLATFORM-macro guard (__IPHONEOS__), not on
+          # SDL_JOYSTICK_MFI, so it still references the MFi driver we dropped above -> undefined symbol at link time.
+          # SDL_uikitview.m also references SDL_AppleTVRemoteOpenedAsJoystick (normally defined in SDL_mfijoystick.m).
+          edit('third_party/SDL2/src/joystick/SDL_joystick.c', [
+           ('#if (defined(__MACOSX__) || defined(__IPHONEOS__) || defined(__TVOS__)) && !defined(SDL_JOYSTICK_DISABLED)\n    &SDL_IOS_JoystickDriver,\n#endif\n', ''),
+          ])
+          with open('third_party/SDL2/src/joystick/SDL_joystick.c', 'a', encoding='utf-8', newline='') as f:
+              f.write('\n/* iOS build without the MFi driver: satisfy SDL_uikitview.m */\nint SDL_AppleTVRemoteOpenedAsJoystick = 0;\n')
+
           print("diag patches applied")
           EOF_PY
           python3 -I ios/scripts/apply_diag.py
