@@ -2167,6 +2167,26 @@ jobs:
             'IniSet( L, @"Engine.Engine", @"Render",               @"Render.Render",                      YES );'),
           ])
 
+          # ---------------- GLES driver on iOS (device log: glError 0x502 on EVERY frame, black/garbled output):
+          #  1) Apple GLES2 raises GL_INVALID_OPERATION for glBindFramebuffer(GL_FRAMEBUFFER, 0): the on-screen framebuffer is
+          #     SDL's own FBO. Lock() -> BindAndroidSceneFBO() binds 0 every frame, so nothing reaches the screen. Capture the
+          #     FBO that SDL left bound after context creation (Init) and bind that instead of 0.
+          #  2) GL_APPLE_texture_format_BGRA8888 requires internalformat GL_RGBA with format GL_BGRA_EXT (EXT_ variant allows both).
+          path = 'engine/Source/NOpenGLESDrv/NOpenGLESDrv.cpp'
+          edit(path, [
+           ('IMPLEMENT_CLASS(UNOpenGLESRenderDevice);\n',
+            'IMPLEMENT_CLASS(UNOpenGLESRenderDevice);\n#ifdef PLATFORM_IOS\nstatic GLuint UE1GLESDefaultFBO = 0; // SDL/UIKit on-screen framebuffer (FBO 0 is invalid on Apple GLES2)\n#else\n#define UE1GLESDefaultFBO 0\n#endif\n'),
+           ('\tNoVolumetricBlend = true;\n\tSupportsFogMaps = true;\n',
+            '#ifdef PLATFORM_IOS\n\t{\n\t\tGLint CurFBO = 0;\n\t\tglGetIntegerv( GL_FRAMEBUFFER_BINDING, &CurFBO );\n\t\tUE1GLESDefaultFBO = (GLuint)CurFBO;\n\t\tdebugf( NAME_Log, "GLES: iOS default framebuffer = %u", (unsigned)UE1GLESDefaultFBO );\n\t}\n#endif\n\tNoVolumetricBlend = true;\n\tSupportsFogMaps = true;\n'),
+           ('\t\t\tglTexImage2D( GL_TEXTURE_2D, UploadMipIndex, UploadFormat, Mip->USize, Mip->VSize, 0, UploadFormat, GL_UNSIGNED_BYTE, (void*)UploadBuf );\n',
+            '\t\t\tglTexImage2D( GL_TEXTURE_2D, UploadMipIndex, ( UploadFormat == GL_BGRA_EXT && !GLAD_GL_EXT_texture_format_BGRA8888 ) ? (GLint)GL_RGBA : (GLint)UploadFormat, Mip->USize, Mip->VSize, 0, UploadFormat, GL_UNSIGNED_BYTE, (void*)UploadBuf );\n'),
+          ])
+          src = open(path, encoding='utf-8', newline='').read()
+          needle = 'glBindFramebuffer( GL_FRAMEBUFFER, 0 )'
+          if src.count(needle) != 4:
+              sys.exit("expected 4 x %s in NOpenGLESDrv.cpp, found %d" % (needle, src.count(needle)))
+          open(path, 'w', encoding='utf-8', newline='').write(src.replace(needle, 'glBindFramebuffer( GL_FRAMEBUFFER, UE1GLESDefaultFBO )'))
+
           print("diag patches applied")
           EOF_PY
           python3 -I ios/scripts/apply_diag.py
