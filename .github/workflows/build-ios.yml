@@ -2288,8 +2288,35 @@ jobs:
           	return K * GCtlScale;
           }
 
+          static BOOL GMenuMode = NO;   // set by UE1PadView; in menus the buttons/stick drive the menu like arrow keys
+
+          static void PushKey( SDL_Scancode Sc, SDL_Keycode Sym, bool Down )
+          {
+          	SDL_Event E; SDL_zero( E );
+          	E.type = Down ? SDL_KEYDOWN : SDL_KEYUP;
+          	E.key.state = Down ? SDL_PRESSED : SDL_RELEASED;
+          	E.key.keysym.scancode = Sc;
+          	E.key.keysym.sym = Sym;
+          	SDL_PushEvent( &E );
+          }
+
+          // Menu navigation: NEXT/PREV = down/up, FIRE/JUMP = Enter (select), ALT = right, DUCK = Escape (back).
+          static void ApplyMenuButton( int Idx, bool Down )
+          {
+          	switch( Idx )
+          	{
+          		case PAD_BTN_NEXT: PushKey( SDL_SCANCODE_DOWN,   SDLK_DOWN,   Down ); break;
+          		case PAD_BTN_PREV: PushKey( SDL_SCANCODE_UP,     SDLK_UP,     Down ); break;
+          		case PAD_BTN_FIRE:
+          		case PAD_BTN_JUMP: PushKey( SDL_SCANCODE_RETURN, SDLK_RETURN, Down ); break;
+          		case PAD_BTN_ALT:  PushKey( SDL_SCANCODE_RIGHT,  SDLK_RIGHT,  Down ); break;
+          		case PAD_BTN_DUCK: PushKey( SDL_SCANCODE_ESCAPE, SDLK_ESCAPE, Down ); break;
+          	}
+          }
+
           static void ApplyButton( int Idx, bool Down )
           {
+          	if( GMenuMode ) { ApplyMenuButton( Idx, Down ); return; }
           	switch( Idx )
           	{
           		case PAD_BTN_FIRE: PushAxis( SDL_CONTROLLER_AXIS_TRIGGERRIGHT, Down ? 32767 : 0 ); break;
@@ -2322,8 +2349,11 @@ jobs:
           	UIView* StickHint;
           	CGFloat Scale;
           	BOOL MenuMode;
+          	int HeldDir;            // menu stick: currently held arrow scancode (0 = none)
+          	CFAbsoluteTime NextRepeat;
           }
           - (void)releaseAll;
+          - (void)tick;
           - (void)setMenuMode:(BOOL)InMenu;
           @end
 
@@ -2394,6 +2424,7 @@ jobs:
           	if( InMenu == MenuMode ) return;
           	[self releaseAll];
           	MenuMode = InMenu;
+          	GMenuMode = InMenu;
           	// buttons AND the stick zone stay visible and active in menus
           	MenuLabel.text = InMenu ? @"CLOSE" : @"MENU";
           	[self setNeedsLayout];
@@ -2463,6 +2494,19 @@ jobs:
           	CGFloat DX = ( P.x - T->Origin.x ) / Radius, DY = ( P.y - T->Origin.y ) / Radius;
           	CGFloat Len = sqrt( DX * DX + DY * DY );
           	if( Len > 1.0 ) { DX /= Len; DY /= Len; Len = 1.0; }
+          	if( MenuMode )
+          	{
+          		// Menu: stick = arrow keys (dominant axis, 0.5 threshold), auto-repeat from -tick.
+          		int Dir = 0;
+          		if( Len >= 0.5 ) Dir = ( fabs( DX ) > fabs( DY ) ) ? ( DX > 0 ? SDL_SCANCODE_RIGHT : SDL_SCANCODE_LEFT ) : ( DY > 0 ? SDL_SCANCODE_DOWN : SDL_SCANCODE_UP );
+          		if( Dir != HeldDir )
+          		{
+          			[self releaseDir];
+          			if( Dir ) { [self pressDir:Dir]; NextRepeat = CFAbsoluteTimeGetCurrent() + 0.40; }
+          		}
+          		StickKnob.center = CGPointMake( T->Origin.x + DX * Radius * 0.9, T->Origin.y + DY * Radius * 0.9 );
+          		return;
+          	}
           	const CGFloat Dead = 0.12;
           	if( Len < Dead ) { DX = DY = 0; }
           	else { CGFloat K = ( Len - Dead ) / ( 1.0 - Dead ) / Len; DX *= K; DY *= K; }
@@ -2470,6 +2514,33 @@ jobs:
           	PushAxis( SDL_CONTROLLER_AXIS_LEFTX, (int)( DX * 32767 ) );
           	PushAxis( SDL_CONTROLLER_AXIS_LEFTY, (int)( DY * 32767 ) );
           	StickKnob.center = CGPointMake( T->Origin.x + DX * Radius * 0.9, T->Origin.y + DY * Radius * 0.9 );
+          }
+
+          - (void)pressDir:(int)Dir
+          {
+          	HeldDir = Dir;
+          	SDL_Keycode Sym = Dir == SDL_SCANCODE_UP ? SDLK_UP : Dir == SDL_SCANCODE_DOWN ? SDLK_DOWN : Dir == SDL_SCANCODE_LEFT ? SDLK_LEFT : SDLK_RIGHT;
+          	PushKey( (SDL_Scancode)Dir, Sym, true );
+          }
+
+          - (void)releaseDir
+          {
+          	if( !HeldDir ) return;
+          	int Dir = HeldDir; HeldDir = 0;
+          	SDL_Keycode Sym = Dir == SDL_SCANCODE_UP ? SDLK_UP : Dir == SDL_SCANCODE_DOWN ? SDLK_DOWN : Dir == SDL_SCANCODE_LEFT ? SDLK_LEFT : SDLK_RIGHT;
+          	PushKey( (SDL_Scancode)Dir, Sym, false );
+          }
+
+          - (void)tick
+          {
+          	if( HeldDir && CFAbsoluteTimeGetCurrent() >= NextRepeat )
+          	{
+          		int Dir = HeldDir;
+          		SDL_Keycode Sym = Dir == SDL_SCANCODE_UP ? SDLK_UP : Dir == SDL_SCANCODE_DOWN ? SDLK_DOWN : Dir == SDL_SCANCODE_LEFT ? SDLK_LEFT : SDLK_RIGHT;
+          		PushKey( (SDL_Scancode)Dir, Sym, false );
+          		PushKey( (SDL_Scancode)Dir, Sym, true );
+          		NextRepeat = CFAbsoluteTimeGetCurrent() + 0.13;
+          	}
           }
 
           - (void)setButton:(int)Idx pressed:(BOOL)Down
@@ -2544,6 +2615,7 @@ jobs:
           	}
           	else if( T->Role == ROLE_MOVE )
           	{
+          		[self releaseDir];
           		PushAxis( SDL_CONTROLLER_AXIS_LEFTX, 0 );
           		PushAxis( SDL_CONTROLLER_AXIS_LEFTY, 0 );
           		StickBase.hidden = YES; StickKnob.hidden = YES; StickHint.hidden = NO;
@@ -2666,9 +2738,46 @@ jobs:
           			if( !Hide ) [Host bringSubviewToFront:GPad];
           		}
           		[GPad setMenuMode:( InMenu != 0 )];
+          		[GPad tick];
+
+          		// Make the GL view fill its parent (the picture was drawn into only part of the screen).
+          		{
+          			static __weak UIView* GLView = nil;
+          			if( !GLView )
+          			{
+          				NSMutableArray* Stack = [NSMutableArray arrayWithObject:Win];
+          				while( [Stack count] && !GLView )
+          				{
+          					UIView* V = [Stack lastObject]; [Stack removeLastObject];
+          					if( [NSStringFromClass( [V.layer class] ) isEqualToString:@"CAEAGLLayer"] ) { GLView = V; break; }
+          					for( UIView* S in V.subviews ) if( S != GPad ) [Stack addObject:S];
+          				}
+          				if( GLView )
+          				{
+          					char Buf[300];
+          					snprintf( Buf, sizeof(Buf), "ui: glview %s frame=%.0f,%.0f %.0fx%.0f bounds=%.0fx%.0f super=%s %.0fx%.0f scale=%.1f",
+          						object_getClassName( GLView ), GLView.frame.origin.x, GLView.frame.origin.y, GLView.frame.size.width, GLView.frame.size.height,
+          						GLView.bounds.size.width, GLView.bounds.size.height,
+          						GLView.superview ? object_getClassName( GLView.superview ) : "none",
+          						GLView.superview ? GLView.superview.bounds.size.width : 0.0, GLView.superview ? GLView.superview.bounds.size.height : 0.0,
+          						(double)GLView.contentScaleFactor );
+          					UE1IOSLog( Buf );
+          				}
+          			}
+          			UIView* Par = GLView.superview;
+          			if( GLView && Par && ( fabs( GLView.frame.size.width - Par.bounds.size.width ) > 1 || fabs( GLView.frame.size.height - Par.bounds.size.height ) > 1 || fabs( GLView.frame.origin.x ) > 1 || fabs( GLView.frame.origin.y ) > 1 ) )
+          			{
+          				char Buf[200];
+          				snprintf( Buf, sizeof(Buf), "ui: glview frame %.0fx%.0f -> parent %.0fx%.0f", GLView.frame.size.width, GLView.frame.size.height, Par.bounds.size.width, Par.bounds.size.height );
+          				UE1IOSLog( Buf );
+          				GLView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+          				GLView.frame = Par.bounds;
+          			}
+          		}
           	}
           }
           '''
+          host_src = host_src.replace('#import <UIKit/UIKit.h>\n', '#import <UIKit/UIKit.h>\n#import <objc/runtime.h>\n', 1)
           open(host_path, 'w', encoding='utf-8', newline='').write(host_src[:host_src.index(pad_marker)] + PAD_V2.lstrip('\n'))
 
           print("diag patches applied")
