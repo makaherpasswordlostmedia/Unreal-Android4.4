@@ -2394,7 +2394,7 @@ jobs:
           	if( InMenu == MenuMode ) return;
           	[self releaseAll];
           	MenuMode = InMenu;
-          	StickHint.hidden = InMenu; // buttons stay visible and active in menus
+          	// buttons AND the stick zone stay visible and active in menus
           	MenuLabel.text = InMenu ? @"CLOSE" : @"MENU";
           	[self setNeedsLayout];
           }
@@ -2422,11 +2422,18 @@ jobs:
 
           - (CGRect)menuHitRect { return CGRectInset( MenuView.frame, -16, -16 ); }
 
+          - (BOOL)inStickZone:(CGPoint)P
+          {
+          	CGPoint C = StickHint.center;
+          	CGFloat R = 110 * Scale;
+          	return ( P.x - C.x ) * ( P.x - C.x ) + ( P.y - C.y ) * ( P.y - C.y ) <= R * R;
+          }
+
           // In the menu only the buttons + CLOSE are ours; every other touch falls through to SDL (touch -> mouse).
           - (UIView*)hitTest:(CGPoint)P withEvent:(UIEvent*)E
           {
           	if( self.hidden ) return nil;
-          	if( MenuMode ) return ( CGRectContainsPoint( [self menuHitRect], P ) || [self buttonAt:P] >= 0 ) ? self : nil;
+          	if( MenuMode ) return ( CGRectContainsPoint( [self menuHitRect], P ) || [self buttonAt:P] >= 0 || [self inStickZone:P] ) ? self : nil;
           	return self;
           }
 
@@ -2492,7 +2499,10 @@ jobs:
           				T->Role = ROLE_BUTTON; T->Btn = Bi; ApplyButton( Bi, true );
           				[self setButton:Bi pressed:YES];
           			}
-          			else if( MenuMode ) { }
+          			else if( MenuMode )
+          			{
+          				if( [self inStickZone:P] && ![self hasRole:ROLE_MOVE] ) T->Role = ROLE_MOVE;
+          			}
           			else if( P.x < B.size.width * 0.5 )
           			{
           				if( ![self hasRole:ROLE_MOVE] ) T->Role = ROLE_MOVE;
@@ -2536,7 +2546,7 @@ jobs:
           	{
           		PushAxis( SDL_CONTROLLER_AXIS_LEFTX, 0 );
           		PushAxis( SDL_CONTROLLER_AXIS_LEFTY, 0 );
-          		StickBase.hidden = YES; StickKnob.hidden = YES; StickHint.hidden = MenuMode;
+          		StickBase.hidden = YES; StickKnob.hidden = YES; StickHint.hidden = NO;
           	}
           	else if( T->Role == ROLE_MENU )
           	{
@@ -2600,6 +2610,44 @@ jobs:
           		UIWindow* Win = [[UIApplication sharedApplication] keyWindow];
           		if( !Win ) return;
           		UIView* Host = Win.rootViewController ? Win.rootViewController.view : Win;
+
+          		// iOS 7 iPad: SDL's view can stay at the portrait size (768x1024) in a landscape app, so the GL surface is
+          		// cropped and only part of the screen is drawn. Log the geometry and force the root view to landscape size.
+          		{
+          			UIApplication* App = [UIApplication sharedApplication];
+          			const UIInterfaceOrientation O = App.statusBarOrientation;
+          			const BOOL Land = UIInterfaceOrientationIsLandscape( O );
+          			const CGSize SB = [UIScreen mainScreen].bounds.size;
+          			const CGFloat Long = SB.width > SB.height ? SB.width : SB.height;
+          			const CGFloat Short = SB.width > SB.height ? SB.height : SB.width;
+          			CGSize HB = Host.bounds.size;
+          			static CGSize LastHB = CGSizeZero; static int LastO = -99; static CGSize LastWB = CGSizeZero;
+          			if( HB.width != LastHB.width || HB.height != LastHB.height || (int)O != LastO || Win.bounds.size.width != LastWB.width )
+          			{
+          				char Buf[300];
+          				snprintf( Buf, sizeof(Buf), "ui: orient=%d screen=%.0fx%.0f window=%.0fx%.0f host=%.0fx%.0f scale=%.1f",
+          					(int)O, SB.width, SB.height, Win.bounds.size.width, Win.bounds.size.height, HB.width, HB.height, (double)[UIScreen mainScreen].scale );
+          				UE1IOSLog( Buf );
+          				LastHB = HB; LastO = (int)O; LastWB = Win.bounds.size;
+          			}
+          			if( Land && HB.height > HB.width )
+          			{
+          				Host.bounds = CGRectMake( 0, 0, Long, Short );
+          				[Host setNeedsLayout]; [Host layoutIfNeeded];
+          				UE1IOSLog( "ui: host bounds forced to landscape" );
+          			}
+          			else if( !Land )
+          			{
+          				static CFAbsoluteTime LastTry = 0;
+          				CFAbsoluteTime Now = CFAbsoluteTimeGetCurrent();
+          				if( Now - LastTry > 1.0 )
+          				{
+          					LastTry = Now;
+          					[[UIDevice currentDevice] setValue:[NSNumber numberWithInt:(int)UIInterfaceOrientationLandscapeRight] forKey:@"orientation"];
+          					[UIViewController attemptRotationToDeviceOrientation];
+          				}
+          			}
+          		}
 
           		BOOL Fresh = NO;
           		if( !GPad || GPad.superview != Host )
