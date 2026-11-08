@@ -2773,10 +2773,37 @@ jobs:
           				GLView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
           				GLView.frame = Par.bounds;
           			}
+          			// Render below native resolution (the system upscales): the single biggest speed-up on an iPad 1.
+          			if( GLView )
+          			{
+          				const CGFloat Want = [UIScreen mainScreen].scale * GRenderScale;
+          				if( fabs( GLView.contentScaleFactor - Want ) > 0.01 )
+          				{
+          					GLView.contentScaleFactor = Want;
+          					[GLView setNeedsLayout];
+          					char Buf[120];
+          					snprintf( Buf, sizeof(Buf), "ui: render scale -> %.2f", (double)Want );
+          					UE1IOSLog( Buf );
+          				}
+          			}
           		}
           	}
           }
           '''
+          def host_rep(old, new):
+              global host_src
+              if host_src.count(old) != 1:
+                  sys.exit('host anchor not found once: ' + old[:60])
+              host_src = host_src.replace(old, new)
+          # render scale (0.4..1.0 of native) + speed-first defaults for old GPUs (iPad 1 = SGX535)
+          host_rep('static float GCtlScale = 1.0f;', 'static float GRenderScale = 0.6f; // fraction of native resolution the GL surface renders at\nstatic float GCtlScale = 1.0f;')
+          host_rep('IniSet( L, @"IOSTouch", @"ControlsScale",   @"1.0", NO );', 'IniSet( L, @"IOSTouch", @"ControlsScale",   @"1.0", NO );\n\t\t\tIniSet( L, @"IOSTouch", @"RenderScale",     @"0.6", YES );')
+          host_rep('if( [K caseInsensitiveCompare:@"ControlsScale"]   == NSOrderedSame && V > 0 ) GCtlScale = MAX( 0.6f, MIN( 1.6f, V ) );', 'if( [K caseInsensitiveCompare:@"ControlsScale"]   == NSOrderedSame && V > 0 ) GCtlScale = MAX( 0.6f, MIN( 1.6f, V ) );\n\t\t\t\tif( [K caseInsensitiveCompare:@"RenderScale"]     == NSOrderedSame && V > 0 ) GRenderScale = MAX( 0.4f, MIN( 1.0f, V ) );')
+          host_rep('IniSet( L, @"NSDLDrv.NSDLClient", @"UseJoystick",       @"True",  YES );', 'IniSet( L, @"NSDLDrv.NSDLClient", @"UseJoystick",       @"True",  YES );\n\t\t\tIniSet( L, @"NSDLDrv.NSDLClient", @"LowDetailTextures", @"True",  YES ); // half-size mips: far less texture bandwidth')
+          host_rep('IniSet( L, @"NOpenGLESDrv.NOpenGLESRenderDevice", @"VolumetricLighting",@"True", NO );', 'IniSet( L, @"NOpenGLESDrv.NOpenGLESRenderDevice", @"VolumetricLighting",@"False",YES );')
+          host_rep('IniSet( L, @"NOpenGLESDrv.NOpenGLESRenderDevice", @"ShinySurfaces",     @"True", NO );', 'IniSet( L, @"NOpenGLESDrv.NOpenGLESRenderDevice", @"ShinySurfaces",     @"False",YES );')
+          host_rep('IniSet( L, @"NOpenGLESDrv.NOpenGLESRenderDevice", @"Coronas",           @"True", NO );', 'IniSet( L, @"NOpenGLESDrv.NOpenGLESRenderDevice", @"Coronas",           @"False",YES );')
+          host_rep('IniSet( L, @"NOpenGLESDrv.NOpenGLESRenderDevice", @"HighDetailActors",  @"True", NO );', 'IniSet( L, @"NOpenGLESDrv.NOpenGLESRenderDevice", @"HighDetailActors",  @"False",YES );')
           host_src = host_src.replace('#import <UIKit/UIKit.h>\n', '#import <UIKit/UIKit.h>\n#import <objc/runtime.h>\n', 1)
           open(host_path, 'w', encoding='utf-8', newline='').write(host_src[:host_src.index(pad_marker)] + PAD_V2.lstrip('\n'))
 
